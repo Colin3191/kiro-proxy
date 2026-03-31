@@ -1,6 +1,6 @@
 {
   "name": "@colin3191/kiro-proxy",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Kiro API proxy with OpenAI and Anthropic compatible endpoints",
   "type": "module",
   "bin": "server.js",
