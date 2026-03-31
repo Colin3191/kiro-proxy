@@ -82,5 +82,3 @@ Claude Code 默认使用 Anthropic 官方 model ID，需要通过环境变量映
   }
 }
 ```
-
-配置后直接运行 `claude` 即可。
