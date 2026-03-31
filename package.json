@@ -4,7 +4,7 @@
   "description": "Kiro API proxy with OpenAI and Anthropic compatible endpoints",
   "type": "module",
   "bin": {
-    "kiroproxy": "server.js"
+    "kiro-proxy": "server.js"
   },
   "files": [
     "server.js",
