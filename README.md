@@ -1,6 +1,8 @@
 # kiro-proxy
 
-读取 [Kiro](https://kiro.dev) 的认证 token，代理请求到 Amazon Q Developer，暴露 OpenAI 和 Anthropic 兼容的 API 接口。
+让 [Kiro](https://kiro.dev) 订阅内含的 Claude 模型可以在 Claude Code 中使用。
+
+通过读取 Kiro 的认证 token，代理请求到 Amazon Q Developer，暴露 OpenAI 和 Anthropic 兼容的 API 接口。
 
 ## 前提
 
