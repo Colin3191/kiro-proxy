@@ -1,9 +1,14 @@
 {
   "name": "@colin3191/kiro-proxy",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Kiro API proxy with OpenAI and Anthropic compatible endpoints",
   "type": "module",
-  "bin": "server.js",
+  "bin": {
+    "kiro-proxy": "./server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "files": [
     "server.js",
     "q-client.js",
