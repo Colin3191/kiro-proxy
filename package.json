@@ -1,7 +1,16 @@
 {
-  "name": "q-developer-proxy",
+  "name": "@colin3191/kiro-proxy",
   "version": "1.0.0",
+  "description": "Kiro API proxy with OpenAI and Anthropic compatible endpoints",
   "type": "module",
+  "bin": {
+    "kiro-proxy": "./server.js"
+  },
+  "files": [
+    "server.js",
+    "q-client.js",
+    "token-reader.js"
+  ],
   "dependencies": {
     "@aws/codewhisperer-streaming-client": "^1.0.34",
     "express": "^4.21.0"

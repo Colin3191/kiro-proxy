@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import express from 'express';
 import crypto from 'crypto';
 import { getAccessToken } from './token-reader.js';
