@@ -1,0 +1,9 @@
+{
+  "name": "q-developer-proxy",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@aws/codewhisperer-streaming-client": "^1.0.34",
+    "express": "^4.21.0"
+  }
+}
