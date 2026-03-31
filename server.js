@@ -25,11 +25,29 @@ async function getClient() {
   return { client: cachedClient, tokenData };
 }
 
+const c = {
+  reset: '\x1b[0m',
+  dim: '\x1b[2m',
+  cyan: '\x1b[36m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  blue: '\x1b[34m',
+  magenta: '\x1b[35m',
+  gray: '\x1b[90m',
+};
+
+const METHOD_COLORS = {
+  POST: c.green,
+  GET: c.blue,
+  DELETE: c.yellow,
+};
+
 function log(method, path, info) {
   const now = new Date();
-  const ts = now.toLocaleTimeString('en-GB', { hour12: false }) + '.' + String(now.getMilliseconds()).padStart(3, '0');
-  const parts = [ts, method, path];
-  if (info) parts.push(typeof info === 'string' ? info : JSON.stringify(info));
+  const ts = c.gray + now.toLocaleTimeString('en-GB', { hour12: false }) + '.' + String(now.getMilliseconds()).padStart(3, '0') + c.reset;
+  const methodColor = METHOD_COLORS[method] || c.magenta;
+  const parts = [ts, methodColor + method + c.reset, c.cyan + path + c.reset];
+  if (info) parts.push(c.dim + (typeof info === 'string' ? info : JSON.stringify(info)) + c.reset);
   console.log(parts.join(' '));
 }
 
@@ -309,14 +327,14 @@ app.get('/health', async (_req, res) => {
 });
 
 app.listen(PORT, async () => {
-  console.log(`Q Developer API Proxy running on http://localhost:${PORT}`);
-  console.log(`  Anthropic: http://localhost:${PORT}/v1/messages`);
-  console.log(`  OpenAI:    http://localhost:${PORT}/v1/chat/completions`);
-  console.log(`  Models:    http://localhost:${PORT}/v1/models`);
+  console.log(`${c.cyan}Kiro Proxy${c.reset} running on ${c.green}http://localhost:${PORT}${c.reset}`);
+  console.log(`  ${c.gray}Anthropic:${c.reset} http://localhost:${PORT}/v1/messages`);
+  console.log(`  ${c.gray}OpenAI:   ${c.reset} http://localhost:${PORT}/v1/chat/completions`);
+  console.log(`  ${c.gray}Models:   ${c.reset} http://localhost:${PORT}/v1/models`);
   try {
     const t = await getAccessToken();
-    console.log(`  Provider: ${t.provider || 'unknown'}, Expires: ${t.expiresAt || 'unknown'}`);
+    console.log(`  ${c.gray}Provider: ${c.yellow}${t.provider || 'unknown'}${c.reset}, Expires: ${c.dim}${t.expiresAt || 'unknown'}${c.reset}`);
   } catch (err) {
-    console.warn(`  Warning: ${err.message}`);
+    console.warn(`  ${c.yellow}Warning:${c.reset} ${err.message}`);
   }
 });
