@@ -1,6 +1,7 @@
 import { CodeWhispererStreaming, GenerateAssistantResponseCommand } from '@aws/codewhisperer-streaming-client';
 import crypto from 'crypto';
-import os from 'os';
+import pkg from 'node-machine-id';
+const { machineIdSync } = pkg;
 
 // region → endpoint 映射
 const REGION_ENDPOINTS = {
@@ -14,9 +15,10 @@ const REGION_ENDPOINTS = {
 };
 const DEFAULT_REGION = 'us-east-1';
 const KIRO_VERSION = process.env.KIRO_VERSION || '0.11.107';
+const MACHINE_ID = machineIdSync();
 
 function buildUserAgent(machineId) {
-  return `KiroIDE ${KIRO_VERSION} ${machineId || os.hostname()}`;
+  return `KiroIDE ${KIRO_VERSION} ${machineId || MACHINE_ID}`;
 }
 
 function regionFromArn(arn) {
@@ -304,6 +306,8 @@ export async function* chatStream(client, { messages, system, tools, profileArn,
 
   // 跟踪当前的 tool_use 状态
   const activeTools = new Map(); // toolUseId → { name, inputChunks }
+  // 收集统计信息，流结束后汇总输出
+  const stats = {};
 
   for await (const event of response.generateAssistantResponseResponse) {
     // 文本内容
@@ -323,6 +327,43 @@ export async function* chatStream(client, { messages, system, tools, profileArn,
       if (event.reasoningContentEvent.signature) {
         yield { type: 'thinking_signature', signature: event.reasoningContentEvent.signature };
       }
+    }
+
+    // 计费/用量事件
+    if (event.meteringEvent) {
+      const m = event.meteringEvent;
+      stats.metering = `${m.usage?.toFixed(4) ?? '?'} ${m.unitPlural || m.unit || 'units'}`;
+    }
+
+    // 代码引用/许可证事件
+    if (event.codeReferenceEvent) {
+      stats.codeRef = event.codeReferenceEvent;
+    }
+
+    // 上下文使用率事件
+    if (event.contextUsageEvent) {
+      stats.context = `${(event.contextUsageEvent.contextUsagePercentage ?? 0).toFixed(2)}%`;
+    }
+
+    // token 用量事件
+    if (event.metadataEvent?.tokenUsage) {
+      const t = event.metadataEvent.tokenUsage;
+      const parts = [`in=${t.uncachedInputTokens ?? 0}`, `out=${t.outputTokens ?? 0}`];
+      if (t.cacheReadInputTokens) parts.push(`cache_read=${t.cacheReadInputTokens}`);
+      if (t.cacheWriteInputTokens) parts.push(`cache_write=${t.cacheWriteInputTokens}`);
+      parts.push(`total=${t.totalTokens ?? 0}`);
+      stats.tokens = parts.join(' ');
+    }
+
+    // 无效状态事件（错误）
+    if (event.invalidStateEvent) {
+      stats.invalid = `${event.invalidStateEvent.reason}: ${event.invalidStateEvent.message}`;
+    }
+
+    // 补充链接事件
+    if (event.supplementaryWebLinksEvent?.supplementaryWebLinks?.length) {
+      const links = event.supplementaryWebLinksEvent.supplementaryWebLinks;
+      stats.links = `${links.length} ref(s): ${links.map(l => l.url || l.title).join(', ')}`;
     }
 
     // 工具调用事件
@@ -366,6 +407,9 @@ export async function* chatStream(client, { messages, system, tools, profileArn,
     }
     yield { type: 'tool_use_end', toolUseId: id, name: tool.name, input: parsedInput };
   }
+
+  // 汇总统计信息
+  yield { type: 'summary', stats };
 }
 
 /**
@@ -376,6 +420,7 @@ export async function chat(client, { messages, system, tools, profileArn, modelI
   let usedModelId;
   let thinkingText = '';
   let thinkingSignature;
+  let stats;
 
   for await (const event of chatStream(client, { messages, system, tools, profileArn, modelId })) {
     if (event.type === 'thinking') {
@@ -398,6 +443,8 @@ export async function chat(client, { messages, system, tools, profileArn, modelI
         content.push({ type: 'thinking', thinking: thinkingText, signature: thinkingSignature || '' });
       }
       content.push({ type: 'tool_use', id: event.toolUseId, name: event.name, input: event.input });
+    } else if (event.type === 'summary') {
+      stats = event.stats;
     }
   }
 
@@ -407,7 +454,7 @@ export async function chat(client, { messages, system, tools, profileArn, modelI
   }
 
   const hasToolUse = content.some(b => b.type === 'tool_use');
-  return { content, stopReason: hasToolUse ? 'tool_use' : 'end_turn', modelId: usedModelId };
+  return { content, stopReason: hasToolUse ? 'tool_use' : 'end_turn', modelId: usedModelId, stats };
 }
 
 // ============================================================

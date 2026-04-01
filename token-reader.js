@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { tagLog, tagWarn, tagError } from './logger.js';
 
 const SSO_CACHE_DIR = path.join(os.homedir(), '.aws', 'sso', 'cache');
 const KIRO_TOKEN_FILE = 'kiro-auth-token.json';
@@ -42,7 +43,7 @@ function writeKiroToken(tokenData) {
     fs.mkdirSync(SSO_CACHE_DIR, { recursive: true });
     fs.writeFileSync(tokenPath, JSON.stringify(tokenData, null, 2));
   } catch (err) {
-    console.warn('[token] Failed to write token to disk:', err.message);
+    tagWarn('token', 'Failed to write token to disk:', err.message);
   }
 }
 
@@ -83,7 +84,7 @@ function isTokenExpired(tokenData) {
 // POST https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken
 // ============================================================
 async function refreshSocialToken(tokenData) {
-  console.log('[token] Refreshing Social token...');
+  tagLog('token', 'Refreshing Social token...');
   const res = await fetch(SOCIAL_REFRESH_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -115,7 +116,7 @@ async function refreshSocialToken(tokenData) {
 // POST https://oidc.us-east-1.amazonaws.com/token
 // ============================================================
 async function refreshIdCToken(tokenData) {
-  console.log('[token] Refreshing IdC token...');
+  tagLog('token', 'Refreshing IdC token...');
 
   // 读取 client registration
   const clientReg = readClientRegistration(tokenData.clientIdHash);
@@ -201,13 +202,13 @@ export async function getAccessToken() {
 
   // 去重：如果已经有刷新在进行，等待它完成
   if (refreshPromise) {
-    console.log('[token] Waiting for ongoing refresh...');
+    tagLog('token', 'Waiting for ongoing refresh...');
     return refreshPromise;
   }
 
   refreshPromise = (async () => {
     try {
-      console.log(`[token] Token expired (${tokenData.expiresAt}), refreshing...`);
+      tagLog('token', `Token expired (${tokenData.expiresAt}), refreshing...`);
       const newToken = await refreshToken(tokenData);
       const enriched = enrichWithProfile(newToken);
 
@@ -215,13 +216,13 @@ export async function getAccessToken() {
       writeKiroToken(enriched);
       cachedToken = enriched;
 
-      console.log(`[token] Token refreshed, new expiry: ${enriched.expiresAt}`);
+      tagLog('token', `Token refreshed, new expiry: ${enriched.expiresAt}`);
       return enriched;
     } catch (err) {
-      console.error('[token] Refresh failed:', err.message);
+      tagError('token', 'Refresh failed:', err.message);
       // 刷新失败，如果旧 token 还没完全过期（只是在缓冲期内），仍然可以用
       if (tokenData.expiresAt && new Date(tokenData.expiresAt) > new Date()) {
-        console.warn('[token] Using existing token despite refresh failure');
+        tagWarn('token', 'Using existing token despite refresh failure');
         cachedToken = enrichWithProfile(tokenData);
         return cachedToken;
       }

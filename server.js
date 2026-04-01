@@ -3,6 +3,7 @@ import express from 'express';
 import crypto from 'crypto';
 import { getAccessToken } from './token-reader.js';
 import { createClient, chat, chatStream, listAvailableModels } from './q-client.js';
+import { c, log, logSummary, reqId, tagError } from './logger.js';
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -25,32 +26,6 @@ async function getClient() {
   return { client: cachedClient, tokenData };
 }
 
-const c = {
-  reset: '\x1b[0m',
-  dim: '\x1b[2m',
-  cyan: '\x1b[36m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  blue: '\x1b[34m',
-  magenta: '\x1b[35m',
-  gray: '\x1b[90m',
-};
-
-const METHOD_COLORS = {
-  POST: c.green,
-  GET: c.blue,
-  DELETE: c.yellow,
-};
-
-function log(method, path, info) {
-  const now = new Date();
-  const ts = c.gray + now.toLocaleTimeString('en-GB', { hour12: false }) + '.' + String(now.getMilliseconds()).padStart(3, '0') + c.reset;
-  const methodColor = METHOD_COLORS[method] || c.magenta;
-  const parts = [ts, methodColor + method + c.reset, c.cyan + path + c.reset];
-  if (info) parts.push(c.dim + (typeof info === 'string' ? info : JSON.stringify(info)) + c.reset);
-  console.log(parts.join(' '));
-}
-
 function msgId() {
   return `msg_${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`;
 }
@@ -67,8 +42,10 @@ app.post('/v1/messages', async (req, res) => {
 
     const { client, tokenData } = await getClient();
     const opts = { messages, system, tools, profileArn: tokenData.profileArn, modelId: model };
+    const rid = reqId();
+    const start = Date.now();
 
-    log('POST', '/v1/messages', {
+    log('POST', '/v1/messages', rid, {
       model: model || 'default',
       stream: !!stream,
       messages: messages.length,
@@ -101,6 +78,7 @@ app.post('/v1/messages', async (req, res) => {
       try {
         let hasToolUse = false;
         let hasThinkingBlock = false;
+        let summary;
 
         for await (const chunk of chatStream(client, opts)) {
           if (chunk.type === 'thinking') {
@@ -173,6 +151,8 @@ app.post('/v1/messages', async (req, res) => {
             });
             send('content_block_stop', { type: 'content_block_stop', index: blockIndex });
             blockIndex++;
+          } else if (chunk.type === 'summary') {
+            summary = chunk.stats;
           }
         }
 
@@ -194,14 +174,16 @@ app.post('/v1/messages', async (req, res) => {
         });
         send('message_stop', { type: 'message_stop' });
         res.end();
+        logSummary(rid, Date.now() - start, summary || {});
       } catch (err) {
-        console.error('[stream error]', err.message);
+        tagError('stream', err.message);
         res.write(`event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message: err.message } })}\n\n`);
         res.end();
       }
     } else {
       // 非流式
       const result = await chat(client, opts);
+      logSummary(rid, Date.now() - start, result.stats || {});
       res.json({
         id: msgId(), type: 'message', role: 'assistant',
         content: result.content,
@@ -212,7 +194,7 @@ app.post('/v1/messages', async (req, res) => {
       });
     }
   } catch (err) {
-    console.error('[anthropic error]', err);
+    tagError('anthropic', err.message || err);
     const status = err.message?.includes('expired') ? 401 : 500;
     res.status(status).json({ type: 'error', error: { type: status === 401 ? 'authentication_error' : 'api_error', message: err.message } });
   }
@@ -236,8 +218,10 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     const { client, tokenData } = await getClient();
     const opts = { messages, system, profileArn: tokenData.profileArn, modelId: model };
+    const rid = reqId();
+    const start = Date.now();
 
-    log('POST', '/v1/chat/completions', {
+    log('POST', '/v1/chat/completions', rid, {
       model: model || 'default',
       stream: !!stream,
       messages: messages.length,
@@ -249,6 +233,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       res.setHeader('Connection', 'keep-alive');
       const responseId = `chatcmpl-${crypto.randomUUID()}`;
       const created = Math.floor(Date.now() / 1000);
+      let summary;
 
       for await (const chunk of chatStream(client, opts)) {
         if (chunk.type === 'content') {
@@ -257,6 +242,8 @@ app.post('/v1/chat/completions', async (req, res) => {
             model: model || 'q-developer',
             choices: [{ index: 0, delta: { content: chunk.content }, finish_reason: null }],
           })}\n\n`);
+        } else if (chunk.type === 'summary') {
+          summary = chunk.stats;
         }
       }
       res.write(`data: ${JSON.stringify({
@@ -266,8 +253,10 @@ app.post('/v1/chat/completions', async (req, res) => {
       })}\n\n`);
       res.write('data: [DONE]\n\n');
       res.end();
+      logSummary(rid, Date.now() - start, summary || {});
     } else {
       const result = await chat(client, opts);
+      logSummary(rid, Date.now() - start, result.stats || {});
       const text = result.content.filter(b => b.type === 'text').map(b => b.text).join('');
       res.json({
         id: `chatcmpl-${crypto.randomUUID()}`, object: 'chat.completion',
@@ -277,7 +266,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       });
     }
   } catch (err) {
-    console.error('[openai error]', err);
+    tagError('openai', err.message || err);
     res.status(500).json({ error: { message: err.message } });
   }
 });
