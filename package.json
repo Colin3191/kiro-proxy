@@ -12,7 +12,8 @@
   "files": [
     "server.js",
     "q-client.js",
-    "token-reader.js"
+    "token-reader.js",
+    "logger.js"
   ],
   "repository": {
     "type": "git",
