@@ -1,7 +1,6 @@
 import { CodeWhispererStreaming, GenerateAssistantResponseCommand } from '@aws/codewhisperer-streaming-client';
 import crypto from 'crypto';
-import pkg from 'node-machine-id';
-const { machineIdSync } = pkg;
+import os from 'os';
 
 // region → endpoint 映射
 const REGION_ENDPOINTS = {
@@ -15,10 +14,9 @@ const REGION_ENDPOINTS = {
 };
 const DEFAULT_REGION = 'us-east-1';
 const KIRO_VERSION = process.env.KIRO_VERSION || '0.11.107';
-const MACHINE_ID = machineIdSync();
 
 function buildUserAgent(machineId) {
-  return `KiroIDE ${KIRO_VERSION} ${machineId || MACHINE_ID}`;
+  return `KiroIDE ${KIRO_VERSION} ${machineId || os.hostname()}`;
 }
 
 function regionFromArn(arn) {
