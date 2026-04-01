@@ -36,8 +36,9 @@ export function reqId() {
  */
 export function log(method, path, id, info) {
   const methodColor = METHOD_COLORS[method] || c.magenta;
-  const parts = [timestamp(), methodColor + method + c.reset, c.cyan + path + c.reset];
+  const parts = [timestamp()];
   if (id) parts.push(c.magenta + `[${id}]` + c.reset);
+  parts.push(methodColor + method + c.reset, c.cyan + path + c.reset);
   if (info) parts.push(c.dim + (typeof info === 'string' ? info : JSON.stringify(info)) + c.reset);
   console.log(parts.join(' '));
 }
