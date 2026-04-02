@@ -1,61 +1,61 @@
-[English](README_EN.md) | 中文
+English | [中文](README.md)
 
 # kiro-proxy
 
-让 [Kiro](https://kiro.dev) 订阅内含的 Claude 模型可以在 Claude Code 中使用。
+Use the Claude models bundled with your [Kiro](https://kiro.dev) subscription in Claude Code.
 
-通过读取 Kiro 的认证 token，代理请求到 Amazon Q Developer，暴露 OpenAI 和 Anthropic 兼容的 API 接口。
+Reads Kiro's auth token, proxies requests to Amazon Q Developer, and exposes OpenAI and Anthropic-compatible API endpoints.
 
-## 前提
+## Prerequisites
 
-需要先安装并登录 Kiro，确保 `~/.aws/sso/cache/kiro-auth-token.json` 存在且未过期。
+Install and log in to Kiro so that `~/.aws/sso/cache/kiro-auth-token.json` exists and is valid.
 
-## 快速开始
+## Quick Start
 
 ```bash
 npx @colin3191/kiro-proxy
 ```
 
-服务默认监听 `http://localhost:3456`。
+Server listens on `http://localhost:3456` by default.
 
-## 配置
+## Configuration
 
-| 环境变量 | 默认值 | 说明 |
-|----------|--------|------|
-| `PORT`   | `3456` | 监听端口 |
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `PORT` | `3456` | Listen port |
 
 ## API
 
-### GET /v1/models — 查询可用模型
+### GET /v1/models — List available models
 
 ```bash
 curl http://localhost:3456/v1/models
 ```
 
-### POST /v1/chat/completions — OpenAI 兼容
+### POST /v1/chat/completions — OpenAI-compatible
 
 ```bash
-# 非流式
+# Non-streaming
 curl http://localhost:3456/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "claude-sonnet-4.6", "messages": [{"role": "user", "content": "Hello"}]}'
 
-# 流式
+# Streaming
 curl http://localhost:3456/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "claude-sonnet-4.6", "messages": [{"role": "user", "content": "Hello"}], "stream": true}'
 ```
 
-### POST /v1/messages — Anthropic 兼容
+### POST /v1/messages — Anthropic-compatible
 
 ```bash
-# 非流式
+# Non-streaming
 curl http://localhost:3456/v1/messages \
   -H "Content-Type: application/json" \
   -H "x-api-key: any" \
   -d '{"model": "claude-sonnet-4.6", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}]}'
 
-# 流式
+# Streaming
 curl http://localhost:3456/v1/messages \
   -H "Content-Type: application/json" \
   -H "x-api-key: any" \
@@ -64,13 +64,13 @@ curl http://localhost:3456/v1/messages \
 
 ### GET /health
 
-检查 token 状态及过期时间。
+Check token status and expiration.
 
-## 与 Claude Code 集成
+## Claude Code Integration
 
-Claude Code 默认使用 Anthropic 官方 model ID，需要通过环境变量映射到 Q Developer 的 model ID。
+Claude Code uses Anthropic's official model IDs by default. Map them to Q Developer model IDs via environment variables.
 
-在 `~/.claude/settings.json` 中添加：
+Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -85,6 +85,6 @@ Claude Code 默认使用 Anthropic 官方 model ID，需要通过环境变量映
 }
 ```
 
-## 相关项目
+## Related Projects
 
-- [kiro-web-search](https://github.com/Colin3191/kiro-web-search) — 将 Kiro 内置的联网搜索封装为 MCP server，可在 Claude Code 等客户端中使用
+- [kiro-web-search](https://github.com/Colin3191/kiro-web-search) — MCP server exposing Kiro's web search for use in Claude Code and other clients
