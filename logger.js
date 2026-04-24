@@ -73,6 +73,7 @@ export function logSummary(id, elapsed, stats) {
   if (stats.context) parts.push(`context=${stats.context}`);
   if (stats.metering) parts.push(stats.metering);
   if (stats.tokens) parts.push(stats.tokens);
+  if (stats.estTokens) parts.push(stats.estTokens);
   if (stats.links) parts.push(stats.links);
   if (stats.invalid) parts.push(`invalid: ${stats.invalid}`);
   if (stats.codeRef) parts.push(`codeRef: ${typeof stats.codeRef === 'string' ? stats.codeRef : JSON.stringify(stats.codeRef)}`);

@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { getAccessToken } from './token-reader.js';
 import { createClient, chat, chatStream, listAvailableModels } from './q-client.js';
 import { c, log, logSummary, reqId, tagError } from './logger.js';
+import { countMessages, countContent } from './token-counter.js';
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -61,6 +62,7 @@ app.post('/v1/messages', async (req, res) => {
       const usedModel = model || 'q-developer';
       let blockIndex = 0;
       let hasTextBlock = false;
+      const inputTokens = countMessages(messages, system);
 
       // message_start
       const send = (event, data) => { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
@@ -70,7 +72,7 @@ app.post('/v1/messages', async (req, res) => {
         message: {
           id, type: 'message', role: 'assistant', content: [],
           model: usedModel, stop_reason: null, stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 0 },
+          usage: { input_tokens: inputTokens, output_tokens: 0 },
         },
       });
       send('ping', { type: 'ping' });
@@ -79,6 +81,7 @@ app.post('/v1/messages', async (req, res) => {
         let hasToolUse = false;
         let hasThinkingBlock = false;
         let summary;
+        const outputParts = [];
 
         for await (const chunk of chatStream(client, opts)) {
           if (chunk.type === 'thinking') {
@@ -90,6 +93,7 @@ app.post('/v1/messages', async (req, res) => {
               });
               hasThinkingBlock = true;
             }
+            outputParts.push(chunk.text);
             send('content_block_delta', {
               type: 'content_block_delta', index: blockIndex,
               delta: { type: 'thinking_delta', thinking: chunk.text },
@@ -120,6 +124,7 @@ app.post('/v1/messages', async (req, res) => {
               });
               hasTextBlock = true;
             }
+            outputParts.push(chunk.content);
             send('content_block_delta', {
               type: 'content_block_delta', index: blockIndex,
               delta: { type: 'text_delta', text: chunk.content },
@@ -139,6 +144,7 @@ app.post('/v1/messages', async (req, res) => {
             }
           } else if (chunk.type === 'tool_use_end') {
             hasToolUse = true;
+            outputParts.push(JSON.stringify(chunk.input));
             // 发送完整的 tool_use content block
             send('content_block_start', {
               type: 'content_block_start', index: blockIndex,
@@ -167,14 +173,17 @@ app.post('/v1/messages', async (req, res) => {
         }
 
         const stopReason = hasToolUse ? 'tool_use' : 'end_turn';
+        const outputTokens = countContent(outputParts.join(''));
         send('message_delta', {
           type: 'message_delta',
           delta: { stop_reason: stopReason, stop_sequence: null },
-          usage: { output_tokens: 0 },
+          usage: { output_tokens: outputTokens },
         });
         send('message_stop', { type: 'message_stop' });
         res.end();
-        logSummary(rid, Date.now() - start, summary || {});
+        const s = summary || {};
+        s.estTokens = `~tokens: in=${inputTokens} out=${outputTokens}`;
+        logSummary(rid, Date.now() - start, s);
       } catch (err) {
         tagError('stream', err.message);
         res.write(`event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message: err.message } })}\n\n`);
@@ -183,14 +192,18 @@ app.post('/v1/messages', async (req, res) => {
     } else {
       // 非流式
       const result = await chat(client, opts);
-      logSummary(rid, Date.now() - start, result.stats || {});
+      const inputTokens = countMessages(messages, system);
+      const outputTokens = countContent(result.content);
+      const s = result.stats || {};
+      s.estTokens = `~tokens: in=${inputTokens} out=${outputTokens}`;
+      logSummary(rid, Date.now() - start, s);
       res.json({
         id: msgId(), type: 'message', role: 'assistant',
         content: result.content,
         model: model || 'q-developer',
         stop_reason: result.stopReason,
         stop_sequence: null,
-        usage: { input_tokens: 0, output_tokens: 0 },
+        usage: { input_tokens: inputTokens, output_tokens: outputTokens },
       });
     }
   } catch (err) {
@@ -233,10 +246,13 @@ app.post('/v1/chat/completions', async (req, res) => {
       res.setHeader('Connection', 'keep-alive');
       const responseId = `chatcmpl-${crypto.randomUUID()}`;
       const created = Math.floor(Date.now() / 1000);
+      const inputTokens = countMessages(messages, system);
       let summary;
+      const outputParts = [];
 
       for await (const chunk of chatStream(client, opts)) {
         if (chunk.type === 'content') {
+          outputParts.push(chunk.content);
           res.write(`data: ${JSON.stringify({
             id: responseId, object: 'chat.completion.chunk', created,
             model: model || 'q-developer',
@@ -253,16 +269,23 @@ app.post('/v1/chat/completions', async (req, res) => {
       })}\n\n`);
       res.write('data: [DONE]\n\n');
       res.end();
-      logSummary(rid, Date.now() - start, summary || {});
+      const outputTokens = countContent(outputParts.join(''));
+      const s = summary || {};
+      s.estTokens = `~tokens: in=${inputTokens} out=${outputTokens}`;
+      logSummary(rid, Date.now() - start, s);
     } else {
       const result = await chat(client, opts);
-      logSummary(rid, Date.now() - start, result.stats || {});
       const text = result.content.filter(b => b.type === 'text').map(b => b.text).join('');
+      const promptTokens = countMessages(messages, system);
+      const completionTokens = countContent(text);
+      const s = result.stats || {};
+      s.estTokens = `~tokens: in=${promptTokens} out=${completionTokens}`;
+      logSummary(rid, Date.now() - start, s);
       res.json({
         id: `chatcmpl-${crypto.randomUUID()}`, object: 'chat.completion',
         created: Math.floor(Date.now() / 1000), model: model || 'q-developer',
         choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }],
-        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
       });
     }
   } catch (err) {

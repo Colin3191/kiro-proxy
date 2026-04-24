@@ -13,6 +13,7 @@
     "server.js",
     "q-client.js",
     "token-reader.js",
+    "token-counter.js",
     "logger.js"
   ],
   "repository": {
@@ -21,6 +22,7 @@
   },
   "dependencies": {
     "@aws/codewhisperer-streaming-client": "^1.0.34",
-    "express": "^4.21.0"
+    "express": "^4.21.0",
+    "js-tiktoken": "^1.0.21"
   }
 }
