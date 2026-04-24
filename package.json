@@ -22,7 +22,6 @@
   },
   "dependencies": {
     "@aws/codewhisperer-streaming-client": "^1.0.34",
-    "express": "^4.21.0",
-    "js-tiktoken": "^1.0.21"
+    "express": "^4.21.0"
   }
 }

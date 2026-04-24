@@ -1,17 +1,13 @@
-import { encodingForModel } from 'js-tiktoken';
-
-const enc = encodingForModel('gpt-4o');
-
 function countText(text) {
   if (!text) return 0;
-  return enc.encode(text).length;
+  return Math.round(text.length / 4);
 }
 
 export function countMessages(messages, system) {
   let tokens = 0;
   if (system) tokens += countText(typeof system === 'string' ? system : JSON.stringify(system));
   for (const msg of messages || []) {
-    tokens += 4; // role + structural overhead
+    tokens += 4;
     if (typeof msg.content === 'string') {
       tokens += countText(msg.content);
     } else if (Array.isArray(msg.content)) {
