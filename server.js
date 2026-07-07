@@ -1,20 +1,26 @@
 #!/usr/bin/env node
 import express from 'express';
 import crypto from 'crypto';
-import { getAccessToken } from './token-reader.js';
+import { getAccessToken, getAccessTokenFromRequest } from './token-reader.js';
 import { createClient, chat, chatStream, listAvailableModels } from './q-client.js';
 import { c, log, tagLog, logSummary, reqId, tagError } from './logger.js';
 import { countMessages, countContent } from './token-counter.js';
 import { recordUsage, queryUsage, todaySummary } from './usage-tracker.js';
 import { initGlobalProxy } from './proxy-config.js';
+import { initTokenStore } from './token-store.js';
 
 const proxyUrl = initGlobalProxy();
 if (proxyUrl) tagLog('proxy', `Using proxy: ${proxyUrl}`);
 
+const args = process.argv.slice(2);
+const MULTI_USER = args.includes('--multi-user') || process.env.MULTI_USER === '1' || process.env.MULTI_USER === 'true';
+if (MULTI_USER) initTokenStore();
+
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
-const PORT = process.env.PORT || 3456;
+const PORT = process.env.DATABRICKS_APP_PORT || process.env.PORT || 3456;
+const HOST = '0.0.0.0';
 const PROXY_API_KEY = process.env.PROXY_API_KEY;
 
 function authMiddleware(req, res, next) {
@@ -29,9 +35,47 @@ app.use(authMiddleware);
 
 let cachedClient = null;
 let cachedToken = null;
+const clientCache = new Map();
 
-async function getClient() {
-  const tokenData = await getAccessToken();
+function extractKiroHeaders(req) {
+  return {
+    accessToken: req.headers['x-kiro-access-token'],
+    refreshToken: req.headers['x-kiro-refresh-token'],
+    authMethod: req.headers['x-kiro-auth-method'],
+    profileArn: req.headers['x-kiro-profile-arn'],
+    region: req.headers['x-kiro-region'],
+    provider: req.headers['x-kiro-provider'],
+    clientIdHash: req.headers['x-kiro-client-id-hash'],
+  };
+}
+
+async function getClient(req) {
+  let tokenData;
+
+  if (MULTI_USER) {
+    const headers = extractKiroHeaders(req);
+    if (!headers.accessToken && !headers.refreshToken) {
+      throw new Error('X-Kiro-Access-Token or X-Kiro-Refresh-Token header required');
+    }
+    tokenData = await getAccessTokenFromRequest(headers);
+
+    if (clientCache.has(tokenData.accessToken)) {
+      return { client: clientCache.get(tokenData.accessToken), tokenData };
+    }
+    const client = createClient(tokenData.accessToken, {
+      authMethod: tokenData.authMethod,
+      profileArn: tokenData.profileArn,
+      provider: tokenData.provider,
+    });
+    clientCache.set(tokenData.accessToken, client);
+    if (clientCache.size > 50) {
+      const oldest = clientCache.keys().next().value;
+      clientCache.delete(oldest);
+    }
+    return { client, tokenData };
+  }
+
+  tokenData = await getAccessToken();
   if (!cachedClient || cachedToken !== tokenData.accessToken) {
     cachedClient = createClient(tokenData.accessToken, {
       authMethod: tokenData.authMethod,
@@ -57,7 +101,7 @@ app.post('/v1/messages', async (req, res) => {
       return res.status(400).json({ type: 'error', error: { type: 'invalid_request_error', message: 'messages required' } });
     }
 
-    const { client, tokenData } = await getClient();
+    const { client, tokenData } = await getClient(req);
     const opts = { messages, system, tools, profileArn: tokenData.profileArn, modelId: model };
     const rid = reqId();
     const start = Date.now();
@@ -226,7 +270,7 @@ app.post('/v1/messages', async (req, res) => {
     }
   } catch (err) {
     tagError('anthropic', err.message || err);
-    const status = err.message?.includes('expired') ? 401 : 500;
+    const status = err.message?.includes('expired') ? 401 : err.message?.includes('X-Kiro-') ? 401 : 500;
     res.status(status).json({ type: 'error', error: { type: status === 401 ? 'authentication_error' : 'api_error', message: err.message } });
   }
 });
@@ -247,7 +291,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       messages.push({ role: m.role, content: m.content });
     }
 
-    const { client, tokenData } = await getClient();
+    const { client, tokenData } = await getClient(req);
     const opts = { messages, system, profileArn: tokenData.profileArn, modelId: model };
     const rid = reqId();
     const start = Date.now();
@@ -317,9 +361,16 @@ app.post('/v1/chat/completions', async (req, res) => {
 // ============================================================
 // GET /v1/models
 // ============================================================
-app.get('/v1/models', async (_req, res) => {
+app.get('/v1/models', async (req, res) => {
   try {
-    const tokenData = await getAccessToken();
+    let tokenData;
+    if (MULTI_USER) {
+      const headers = extractKiroHeaders(req);
+      if (!headers.accessToken && !headers.refreshToken) return res.status(401).json({ error: { message: 'X-Kiro-Access-Token or X-Kiro-Refresh-Token header required' } });
+      tokenData = await getAccessTokenFromRequest(headers);
+    } else {
+      tokenData = await getAccessToken();
+    }
     const { models, defaultModel } = await listAvailableModels(tokenData.accessToken, {
       profileArn: tokenData.profileArn, authMethod: tokenData.authMethod, provider: tokenData.provider,
     });
@@ -336,9 +387,16 @@ app.get('/v1/models', async (_req, res) => {
   }
 });
 
-app.get('/q/models', async (_req, res) => {
+app.get('/q/models', async (req, res) => {
   try {
-    const tokenData = await getAccessToken();
+    let tokenData;
+    if (MULTI_USER) {
+      const headers = extractKiroHeaders(req);
+      if (!headers.accessToken && !headers.refreshToken) return res.status(401).json({ error: { message: 'X-Kiro-Access-Token or X-Kiro-Refresh-Token header required' } });
+      tokenData = await getAccessTokenFromRequest(headers);
+    } else {
+      tokenData = await getAccessToken();
+    }
     const result = await listAvailableModels(tokenData.accessToken, {
       profileArn: tokenData.profileArn, authMethod: tokenData.authMethod, provider: tokenData.provider,
     });
@@ -348,11 +406,18 @@ app.get('/q/models', async (_req, res) => {
   }
 });
 
-app.get('/health', async (_req, res) => {
+app.get('/health', async (req, res) => {
   try {
-    const tokenData = await getAccessToken();
+    let tokenData;
+    if (MULTI_USER) {
+      const headers = extractKiroHeaders(req);
+      if (!headers.accessToken && !headers.refreshToken) return res.json({ status: 'ok', mode: 'multi-user', message: 'Send X-Kiro-Access-Token header for token health' });
+      tokenData = await getAccessTokenFromRequest(headers);
+    } else {
+      tokenData = await getAccessToken();
+    }
     const expired = tokenData.expiresAt && new Date(tokenData.expiresAt) < new Date();
-    res.json({ status: expired ? 'token_expired' : 'ok', provider: tokenData.provider || 'unknown', expiresAt: tokenData.expiresAt });
+    res.json({ status: expired ? 'token_expired' : 'ok', mode: MULTI_USER ? 'multi-user' : 'local', provider: tokenData.provider || 'unknown', expiresAt: tokenData.expiresAt });
   } catch (err) {
     res.status(503).json({ status: 'error', message: err.message });
   }
@@ -366,18 +431,21 @@ app.get('/credits', (_req, res) => {
   res.json(queryUsage(period));
 });
 
-app.listen(PORT, async () => {
-  console.log(`${c.cyan}Kiro Proxy${c.reset} running on ${c.green}http://localhost:${PORT}${c.reset}`);
-  console.log(`  ${c.gray}Anthropic:${c.reset} http://localhost:${PORT}/v1/messages`);
-  console.log(`  ${c.gray}OpenAI:   ${c.reset} http://localhost:${PORT}/v1/chat/completions`);
-  console.log(`  ${c.gray}Models:   ${c.reset} http://localhost:${PORT}/v1/models`);
-  console.log(`  ${c.gray}Credits: ${c.reset} http://localhost:${PORT}/credits`);
+app.listen(PORT, HOST, async () => {
+  const modeLabel = MULTI_USER ? `${c.magenta}multi-user${c.reset} (token DB)` : `${c.green}local${c.reset}`;
+  console.log(`${c.cyan}Kiro Proxy${c.reset} running on ${c.green}http://${HOST}:${PORT}${c.reset} [${modeLabel}]`);
+  console.log(`  ${c.gray}Anthropic:${c.reset} http://${HOST}:${PORT}/v1/messages`);
+  console.log(`  ${c.gray}OpenAI:   ${c.reset} http://${HOST}:${PORT}/v1/chat/completions`);
+  console.log(`  ${c.gray}Models:   ${c.reset} http://${HOST}:${PORT}/v1/models`);
+  console.log(`  ${c.gray}Credits: ${c.reset} http://${HOST}:${PORT}/credits`);
   console.log(`  ${c.gray}Auth:     ${c.reset} ${PROXY_API_KEY ? `${c.green}enabled${c.reset} (PROXY_API_KEY)` : `${c.yellow}disabled${c.reset} (no PROXY_API_KEY set)`}`);
-  try {
-    const t = await getAccessToken();
-    console.log(`  ${c.gray}Provider: ${c.yellow}${t.provider || 'unknown'}${c.reset}, Expires: ${c.dim}${t.expiresAt || 'unknown'}${c.reset}`);
-  } catch (err) {
-    console.warn(`  ${c.yellow}Warning:${c.reset} ${err.message}`);
+  if (!MULTI_USER) {
+    try {
+      const t = await getAccessToken();
+      console.log(`  ${c.gray}Provider: ${c.yellow}${t.provider || 'unknown'}${c.reset}, Expires: ${c.dim}${t.expiresAt || 'unknown'}${c.reset}`);
+    } catch (err) {
+      console.warn(`  ${c.yellow}Warning:${c.reset} ${err.message}`);
+    }
   }
 });
 
