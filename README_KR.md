@@ -2,23 +2,36 @@
 
 # kiro-proxy
 
-Kiro 구독에 포함된 Claude 모델을 OpenAI/Anthropic 호환 API로 노출하는 프록시.
+[Kiro](https://kiro.dev) 구독에 포함된 Claude 모델을 Claude Code에서 사용할 수 있게 해주는 프록시.
 
-Kiro 인증 토큰을 읽어서 Amazon Q Developer로 요청을 프록시하고, OpenAI 및 Anthropic 호환 엔드포인트를 제공합니다.
+Kiro 인증 토큰을 읽어서 Amazon Q Developer로 요청을 프록시하고, OpenAI 및 Anthropic 호환 API 엔드포인트를 제공합니다.
 
-## 모드
+## 전제조건
 
-### 로컬 모드 (기본)
+Kiro를 설치하고 로그인해서 `~/.aws/sso/cache/kiro-auth-token.json`이 존재하고 유효해야 합니다.
 
-로컬 머신의 `~/.aws/sso/cache/kiro-auth-token.json`에서 토큰을 읽습니다.
+## 빠른 시작
 
 ```bash
-node server.js
+npx kiro-proxy
 ```
 
-### 멀티유저 모드
+서버 기본 포트: `http://localhost:3456`
 
-클라이언트가 요청 헤더로 토큰을 전달하면 서버가 SQLite DB에 캐시하고, 만료 시 자동으로 refresh합니다. 여러 유저가 각자 토큰으로 동시에 사용 가능.
+## 설정
+
+| 환경변수 | 기본값 | 설명 |
+|----------|--------|------|
+| `PORT` | `3456` | 수신 포트 |
+| `PROXY_API_KEY` | 없음 | 설정 시 모든 요청에 이 키로 인증 필요. 미설정 시 검증 안 함 |
+| `HTTPS_PROXY` | 없음 | HTTP/HTTPS 프록시 주소, 예: `http://127.0.0.1:7890` |
+| `MULTI_USER` | `false` | `true`이면 멀티유저 모드 (`--multi-user` 플래그와 동일) |
+| `TOKEN_DB_PATH` | `~/.kiro-proxy/tokens.db` | 멀티유저 모드 토큰 DB 경로 |
+| `DATABRICKS_APP_PORT` | - | 설정 시 PORT보다 우선 |
+
+## 멀티유저 모드
+
+여러 클라이언트가 각자의 Kiro 토큰으로 프록시를 동시에 사용 가능. 서버가 토큰을 SQLite DB에 캐시하고 만료 시 자동 refresh.
 
 ```bash
 # CLI 플래그
@@ -28,7 +41,7 @@ node server.js --multi-user
 MULTI_USER=true node server.js
 ```
 
-멀티유저 모드에서 클라이언트는 다음 헤더를 포함해야 합니다:
+클라이언트는 다음 헤더를 포함해야 합니다:
 
 | 헤더 | 필수 | 설명 |
 |------|------|------|
@@ -57,67 +70,78 @@ eval curl http://localhost:3456/v1/messages \
 ```
 
 토큰 흐름:
-1. 첫 요청 시 토큰 유효성 검증 후 DB에 저장
-2. 이후 요청에서 DB 캐시 사용
-3. 만료 시 서버가 자동 refresh → DB 갱신
-4. refresh token 자체 만료 시 401 반환 → 클라이언트가 새 토큰 제출
+1. 첫 요청: 토큰 검증 후 DB에 저장
+2. 이후 요청: DB 캐시 사용
+3. 만료 시: 서버가 자동 refresh → DB 갱신
+4. refresh token 자체 만료: 401 반환 → 클라이언트가 새 토큰 제출
 
-## 전제조건
-
-Kiro를 설치하고 로그인해서 `~/.aws/sso/cache/kiro-auth-token.json`이 존재해야 합니다.
-
-## 빠른 시작
-
-```bash
-npx kiro-proxy
-```
-
-서버 기본 포트: `http://localhost:3456`
-
-## 설정
-
-| 환경변수 | 기본값 | 설명 |
-|----------|--------|------|
-| `PORT` | `3456` | 수신 포트 |
-| `DATABRICKS_APP_PORT` | - | 설정 시 PORT보다 우선 |
-| `PROXY_API_KEY` | - | 설정 시 모든 요청에 Bearer 인증 필요 |
-| `MULTI_USER` | `false` | `true`이면 멀티유저 모드 (`--multi-user` 플래그와 동일) |
-| `TOKEN_DB_PATH` | `~/.kiro-proxy/tokens.db` | 토큰 DB 경로 |
-| `HTTPS_PROXY` | - | 아웃바운드 프록시 주소 |
+`--multi-user` 없이 실행하면 기존과 완전히 동일하게 동작 (로컬 토큰 파일 읽기).
 
 ## API
+
+### GET /v1/models — 사용 가능한 모델 조회
+
+```bash
+curl http://localhost:3456/v1/models
+```
 
 ### POST /v1/messages — Anthropic 호환
 
 ```bash
+# 비스트리밍
 curl http://localhost:3456/v1/messages \
   -H "Content-Type: application/json" \
+  -H "x-api-key: any" \
   -d '{"model": "claude-sonnet-4.6", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}]}'
+
+# 스트리밍
+curl http://localhost:3456/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: any" \
+  -d '{"model": "claude-sonnet-4.6", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}], "stream": true}'
 ```
 
 ### POST /v1/chat/completions — OpenAI 호환
 
 ```bash
+# 비스트리밍
 curl http://localhost:3456/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "claude-sonnet-4.6", "messages": [{"role": "user", "content": "Hello"}]}'
+
+# 스트리밍
+curl http://localhost:3456/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "claude-sonnet-4.6", "messages": [{"role": "user", "content": "Hello"}], "stream": true}'
 ```
-
-### GET /v1/models
-
-사용 가능한 모델 목록 조회.
 
 ### GET /health
 
 토큰 상태 및 만료 시간 확인.
 
-### GET /credits?period=today|7d|30d|all
+### GET /credits
 
-크레딧 사용량 통계.
+크레딧 사용량 통계. `period` 파라미터 지원:
+
+```bash
+# 오늘 사용량 (기본)
+curl http://localhost:3456/credits
+
+# 최근 7일
+curl http://localhost:3456/credits?period=7d
+
+# 최근 30일
+curl http://localhost:3456/credits?period=30d
+
+# 전체
+curl http://localhost:3456/credits?period=all
+```
 
 ## Claude Code 연동
 
-`~/.claude/settings.json`:
+Claude Code는 기본적으로 Anthropic 공식 model ID를 사용합니다. 환경변수로 Q Developer model ID에 매핑해야 합니다.
+
+`~/.claude/settings.json`에 추가:
 
 ```json
 {
@@ -132,14 +156,25 @@ curl http://localhost:3456/v1/chat/completions \
 }
 ```
 
+`model` 옵션: `sonnet`, `opus`, `haiku`. `[1m]` 접미사로 1M 컨텍스트 윈도우 활성화 (예: `"opus[1m]"`).
+
+> 주의: `ANTHROPIC_MODEL` 환경변수를 설정하지 마세요. `model` 필드를 덮어써서 컨텍스트 윈도우 설정이 무효화됩니다.
+
 ## 프록시 설정
 
-`Invalid model` 에러 발생 시:
+2026년 5월 1일부터 Kiro의 Claude 모델은 중국 대륙 및 홍콩/마카오/대만에서 사용할 수 없습니다. `Invalid model` 에러가 발생하면 프록시를 설정하세요.
+
+> 주의: 프록시 노드는 다른 지역(싱가포르, 태국, 한국 등)을 선택해야 합니다.
+
+환경변수로 HTTP 프록시 설정:
 
 ```bash
-HTTPS_PROXY=http://127.0.0.1:7890 node server.js
+# 프록시 설정 후 시작
+HTTPS_PROXY=http://127.0.0.1:7890 npx kiro-proxy
 ```
 
-## 원본 프로젝트
+지원 환경변수: `HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY`, `http_proxy` (왼쪽부터 우선순위).
 
-Fork from [Colin3191/kiro-proxy](https://github.com/Colin3191/kiro-proxy)
+## 관련 프로젝트
+
+- [kiro-web-search](https://github.com/Colin3191/kiro-web-search) — Kiro 내장 웹 검색을 MCP server로 래핑, Claude Code 등에서 사용 가능

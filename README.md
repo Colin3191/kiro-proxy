@@ -2,23 +2,36 @@
 
 # kiro-proxy
 
-将 Kiro 订阅中的 Claude 模型通过 OpenAI/Anthropic 兼容 API 暴露出来。
+让 [Kiro](https://kiro.dev) 订阅内含的 Claude 模型可以在 Claude Code 中使用。
 
-读取 Kiro 认证 token，代理请求到 Amazon Q Developer，提供 OpenAI 和 Anthropic 兼容端点。
+通过读取 Kiro 的认证 token，代理请求到 Amazon Q Developer，暴露 OpenAI 和 Anthropic 兼容的 API 接口。
 
-## 模式
+## 前提
 
-### 本地模式（默认）
+需要先安装并登录 Kiro，确保 `~/.aws/sso/cache/kiro-auth-token.json` 存在且未过期。
 
-从本机 `~/.aws/sso/cache/kiro-auth-token.json` 读取 token。
+## 快速开始
 
 ```bash
-node server.js
+npx kiro-proxy
 ```
 
-### 多用户模式
+服务默认监听 `http://localhost:3456`。
 
-客户端通过请求头传递 token，服务器缓存到 SQLite DB 并在过期时自动刷新。多个用户可同时使用各自 token。
+## 配置
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `PORT`   | `3456` | 监听端口 |
+| `PROXY_API_KEY` | 无 | 设置后所有请求需携带此 key 进行鉴权，未设置则不校验 |
+| `HTTPS_PROXY` | 无 | HTTP/HTTPS 代理地址，如 `http://127.0.0.1:7890` |
+| `MULTI_USER` | `false` | `true` 启用多用户模式（等同 `--multi-user` 参数） |
+| `TOKEN_DB_PATH` | `~/.kiro-proxy/tokens.db` | 多用户模式下的 Token 数据库路径 |
+| `DATABRICKS_APP_PORT` | - | 设置后优先于 PORT |
+
+## 多用户模式
+
+支持多客户端各自使用自己的 Kiro token 同时使用代理。服务器将 token 缓存到 SQLite DB，过期时自动刷新。
 
 ```bash
 # CLI 参数
@@ -28,7 +41,7 @@ node server.js --multi-user
 MULTI_USER=true node server.js
 ```
 
-多用户模式下，客户端需传递以下请求头：
+客户端需传递以下请求头：
 
 | 请求头 | 必需 | 说明 |
 |--------|------|------|
@@ -41,7 +54,7 @@ MULTI_USER=true node server.js
 
 \* 至少提供其中一个。建议同时传两个以启用自动续期。
 
-提取 token 示例：
+提取 token：
 
 ```bash
 # 使用内置脚本
@@ -62,60 +75,71 @@ Token 流程：
 3. 过期时：服务器自动刷新并更新 DB
 4. refresh token 本身过期：返回 401，客户端需提交新 token
 
-## 前提
-
-安装并登录 Kiro，确保 `~/.aws/sso/cache/kiro-auth-token.json` 存在。
-
-## 快速开始
-
-```bash
-npx kiro-proxy
-```
-
-默认端口：`http://localhost:3456`
-
-## 配置
-
-| 环境变量 | 默认值 | 说明 |
-|----------|--------|------|
-| `PORT` | `3456` | 监听端口 |
-| `DATABRICKS_APP_PORT` | - | 设置后优先于 PORT |
-| `PROXY_API_KEY` | - | 设置后所有请求需 Bearer 认证 |
-| `MULTI_USER` | `false` | `true` 启用多用户模式（等同 `--multi-user` 参数） |
-| `TOKEN_DB_PATH` | `~/.kiro-proxy/tokens.db` | Token 数据库路径 |
-| `HTTPS_PROXY` | - | 出站代理地址 |
+不使用 `--multi-user` 时行为与原版完全一致（读取本地 token 文件）。
 
 ## API
+
+### GET /v1/models — 查询可用模型
+
+```bash
+curl http://localhost:3456/v1/models
+```
 
 ### POST /v1/messages — Anthropic 兼容
 
 ```bash
+# 非流式
 curl http://localhost:3456/v1/messages \
   -H "Content-Type: application/json" \
+  -H "x-api-key: any" \
   -d '{"model": "claude-sonnet-4.6", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}]}'
+
+# 流式
+curl http://localhost:3456/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: any" \
+  -d '{"model": "claude-sonnet-4.6", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}], "stream": true}'
 ```
 
 ### POST /v1/chat/completions — OpenAI 兼容
 
 ```bash
+# 非流式
 curl http://localhost:3456/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "claude-sonnet-4.6", "messages": [{"role": "user", "content": "Hello"}]}'
+
+# 流式
+curl http://localhost:3456/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "claude-sonnet-4.6", "messages": [{"role": "user", "content": "Hello"}], "stream": true}'
 ```
-
-### GET /v1/models
-
-查询可用模型列表。
 
 ### GET /health
 
 检查 token 状态及过期时间。
 
-### GET /credits?period=today|7d|30d|all
+### GET /credits
 
-积分使用统计。
+查询积分消耗统计，支持 `period` 参数：
 
-## Claude Code 集成
+```bash
+# 今日消耗（默认）
+curl http://localhost:3456/credits
+
+# 最近 7 天
+curl http://localhost:3456/credits?period=7d
+
+# 最近 30 天
+curl http://localhost:3456/credits?period=30d
+
+# 全部
+curl http://localhost:3456/credits?period=all
+```
+
+## 与 Claude Code 集成
+
+Claude Code 默认使用 Anthropic 官方 model ID，需要通过环境变量映射到 Q Developer 的 model ID。
 
 在 `~/.claude/settings.json` 中添加：
 
@@ -132,14 +156,25 @@ curl http://localhost:3456/v1/chat/completions \
 }
 ```
 
+`model` 可选值：`sonnet`、`opus`、`haiku`，添加 `[1m]` 后缀可启用 1M 上下文窗口（如 `"opus[1m]"`）。
+
+> 注意：不要设置 `ANTHROPIC_MODEL` 环境变量，它会覆盖 `model` 字段，导致上下文窗口等配置失效。
+
 ## 代理设置
 
-遇到 `Invalid model` 错误时：
+自 2026 年 5 月 1 日起，Kiro 上的 Claude 模型无法在中国大陆及港澳台地区使用。如果遇到 `Invalid model` 错误，请配置代理。
+
+> 注意：代理节点需选择其他地区（如新加坡、泰国、韩国等）。
+
+通过环境变量设置 HTTP 代理：
 
 ```bash
-HTTPS_PROXY=http://127.0.0.1:7890 node server.js
+# 设置代理后启动
+HTTPS_PROXY=http://127.0.0.1:7890 npx kiro-proxy
 ```
 
-## 原始项目
+支持的环境变量：`HTTPS_PROXY`、`https_proxy`、`HTTP_PROXY`、`http_proxy`，优先级从左到右。
 
-Fork from [Colin3191/kiro-proxy](https://github.com/Colin3191/kiro-proxy)
+## 相关项目
+
+- [kiro-web-search](https://github.com/Colin3191/kiro-web-search) — 将 Kiro 内置的联网搜索封装为 MCP server，可在 Claude Code 等客户端中使用

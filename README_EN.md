@@ -2,23 +2,36 @@
 
 # kiro-proxy
 
-Proxy that exposes Claude models from your Kiro subscription as OpenAI/Anthropic-compatible API endpoints.
+Use the Claude models bundled with your [Kiro](https://kiro.dev) subscription in Claude Code.
 
-Reads Kiro auth tokens, proxies requests to Amazon Q Developer, and serves OpenAI and Anthropic-compatible APIs.
+Reads Kiro's auth token, proxies requests to Amazon Q Developer, and exposes OpenAI and Anthropic-compatible API endpoints.
 
-## Modes
+## Prerequisites
 
-### Local mode (default)
+Install and log in to Kiro so that `~/.aws/sso/cache/kiro-auth-token.json` exists and is valid.
 
-Reads token from `~/.aws/sso/cache/kiro-auth-token.json` on the local machine.
+## Quick Start
 
 ```bash
-node server.js
+npx kiro-proxy
 ```
 
-### Multi-user mode
+Server listens on `http://localhost:3456` by default.
 
-Clients pass their Kiro token via request headers. The server caches tokens in a SQLite DB and auto-refreshes them on expiry. Multiple users can use the proxy simultaneously with their own tokens.
+## Configuration
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `PORT` | `3456` | Listen port |
+| `PROXY_API_KEY` | None | When set, all requests must include this key for authentication. No validation when unset |
+| `HTTPS_PROXY` | None | HTTP/HTTPS proxy URL, e.g. `http://127.0.0.1:7890` |
+| `MULTI_USER` | `false` | `true` enables multi-user mode (same as `--multi-user` flag) |
+| `TOKEN_DB_PATH` | `~/.kiro-proxy/tokens.db` | Token database path for multi-user mode |
+| `DATABRICKS_APP_PORT` | - | Overrides PORT when set |
+
+## Multi-user Mode
+
+Allows multiple clients to use the proxy simultaneously with their own Kiro tokens. The server caches tokens in a SQLite DB and auto-refreshes on expiry.
 
 ```bash
 # CLI flag
@@ -28,7 +41,7 @@ node server.js --multi-user
 MULTI_USER=true node server.js
 ```
 
-In multi-user mode, clients must include the following headers:
+Clients must include the following headers:
 
 | Header | Required | Description |
 |--------|----------|-------------|
@@ -62,60 +75,71 @@ Token flow:
 3. On expiry: server auto-refreshes and updates DB
 4. If refresh token itself expires: returns 401, client must submit a fresh token
 
-## Prerequisites
-
-Install and log in to Kiro so that `~/.aws/sso/cache/kiro-auth-token.json` exists.
-
-## Quick Start
-
-```bash
-npx kiro-proxy
-```
-
-Default port: `http://localhost:3456`
-
-## Configuration
-
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
-| `PORT` | `3456` | Listen port |
-| `DATABRICKS_APP_PORT` | - | Overrides PORT when set |
-| `PROXY_API_KEY` | - | When set, all requests require Bearer auth |
-| `MULTI_USER` | `false` | `true` enables multi-user mode (same as `--multi-user` flag) |
-| `TOKEN_DB_PATH` | `~/.kiro-proxy/tokens.db` | Token database path |
-| `HTTPS_PROXY` | - | Outbound proxy URL |
+Without `--multi-user`, behaves exactly as before (reads local token file).
 
 ## API
+
+### GET /v1/models — List available models
+
+```bash
+curl http://localhost:3456/v1/models
+```
 
 ### POST /v1/messages — Anthropic-compatible
 
 ```bash
+# Non-streaming
 curl http://localhost:3456/v1/messages \
   -H "Content-Type: application/json" \
+  -H "x-api-key: any" \
   -d '{"model": "claude-sonnet-4.6", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}]}'
+
+# Streaming
+curl http://localhost:3456/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: any" \
+  -d '{"model": "claude-sonnet-4.6", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}], "stream": true}'
 ```
 
 ### POST /v1/chat/completions — OpenAI-compatible
 
 ```bash
+# Non-streaming
 curl http://localhost:3456/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "claude-sonnet-4.6", "messages": [{"role": "user", "content": "Hello"}]}'
+
+# Streaming
+curl http://localhost:3456/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "claude-sonnet-4.6", "messages": [{"role": "user", "content": "Hello"}], "stream": true}'
 ```
-
-### GET /v1/models
-
-List available models.
 
 ### GET /health
 
 Check token status and expiration.
 
-### GET /credits?period=today|7d|30d|all
+### GET /credits
 
-Credit usage statistics.
+Query credit usage statistics. Supports `period` parameter:
+
+```bash
+# Today's usage (default)
+curl http://localhost:3456/credits
+
+# Last 7 days
+curl http://localhost:3456/credits?period=7d
+
+# Last 30 days
+curl http://localhost:3456/credits?period=30d
+
+# All time
+curl http://localhost:3456/credits?period=all
+```
 
 ## Claude Code Integration
+
+Claude Code uses Anthropic's official model IDs by default. Map them to Q Developer model IDs via environment variables.
 
 Add to `~/.claude/settings.json`:
 
@@ -132,14 +156,25 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
+`model` accepts `sonnet`, `opus`, or `haiku`. Append `[1m]` to enable the 1M context window (e.g. `"opus[1m]"`).
+
+> Note: Do not set the `ANTHROPIC_MODEL` environment variable — it overrides the `model` field and disables context window configuration.
+
 ## Proxy Setup
 
-If you encounter `Invalid model` errors:
+Since May 1, 2026, Claude models on Kiro are unavailable in mainland China, Hong Kong, Macau, and Taiwan. If you encounter an `Invalid model` error, configure a proxy.
+
+> Note: Proxy nodes must be in other regions (e.g. Singapore, Thailand, South Korea).
+
+Set the proxy via environment variable:
 
 ```bash
-HTTPS_PROXY=http://127.0.0.1:7890 node server.js
+# Start with proxy
+HTTPS_PROXY=http://127.0.0.1:7890 npx kiro-proxy
 ```
 
-## Origin
+Supported environment variables: `HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY`, `http_proxy` (priority from left to right).
 
-Forked from [Colin3191/kiro-proxy](https://github.com/Colin3191/kiro-proxy)
+## Related Projects
+
+- [kiro-web-search](https://github.com/Colin3191/kiro-web-search) — MCP server exposing Kiro's web search for use in Claude Code and other clients
