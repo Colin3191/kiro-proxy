@@ -132,26 +132,6 @@ curl http://localhost:3456/v1/chat/completions \
 }
 ```
 
-## Databricks Apps 部署
-
-`app.yaml` 示例（已加入 `.gitignore`，仅本地维护）：
-
-```yaml
-command:
-  - node
-  - server.js
-  - --multi-user
-env:
-  - name: PROXY_API_KEY
-    valueFrom: secret
-  - name: TOKEN_DB_PATH
-    value: "/tmp/kiro-proxy/tokens.db"
-```
-
-```bash
-databricks apps deploy kiro-proxy --source-code-path "/Workspace/Users/$USER/kiro-proxy"
-```
-
 ## 代理设置
 
 遇到 `Invalid model` 错误时：

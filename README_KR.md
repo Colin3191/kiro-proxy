@@ -132,26 +132,6 @@ curl http://localhost:3456/v1/chat/completions \
 }
 ```
 
-## Databricks Apps 배포
-
-`app.yaml` 예시 (`.gitignore`에 포함, 로컬에서만 관리):
-
-```yaml
-command:
-  - node
-  - server.js
-  - --multi-user
-env:
-  - name: PROXY_API_KEY
-    valueFrom: secret
-  - name: TOKEN_DB_PATH
-    value: "/tmp/kiro-proxy/tokens.db"
-```
-
-```bash
-databricks apps deploy kiro-proxy --source-code-path "/Workspace/Users/$USER/kiro-proxy"
-```
-
 ## 프록시 설정
 
 `Invalid model` 에러 발생 시:

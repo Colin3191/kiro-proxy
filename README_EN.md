@@ -132,26 +132,6 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
-## Databricks Apps Deployment
-
-Example `app.yaml` (in `.gitignore`, managed locally):
-
-```yaml
-command:
-  - node
-  - server.js
-  - --multi-user
-env:
-  - name: PROXY_API_KEY
-    valueFrom: secret
-  - name: TOKEN_DB_PATH
-    value: "/tmp/kiro-proxy/tokens.db"
-```
-
-```bash
-databricks apps deploy kiro-proxy --source-code-path "/Workspace/Users/$USER/kiro-proxy"
-```
-
 ## Proxy Setup
 
 If you encounter `Invalid model` errors:
