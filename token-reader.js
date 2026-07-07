@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { tagLog, tagWarn, tagError } from './logger.js';
+import { hashToken, getStoredToken, upsertToken, deleteToken } from './token-store.js';
 
 const SSO_CACHE_DIR = path.join(os.homedir(), '.aws', 'sso', 'cache');
 const KIRO_TOKEN_FILE = 'kiro-auth-token.json';
@@ -243,4 +244,72 @@ function enrichWithProfile(tokenData) {
     }
   }
   return tokenData;
+}
+
+// ============================================================
+// Remote mode: 클라이언트가 보낸 kiro token으로 동작
+// ============================================================
+
+const refreshLocks = new Map();
+
+/**
+ * @param {object} headers — { accessToken, refreshToken, ?authMethod, ?profileArn, ?region, ?provider }
+ */
+export async function getAccessTokenFromRequest(headers) {
+  const { accessToken, refreshToken: clientRefreshToken, authMethod, profileArn, region, provider, clientIdHash } = headers;
+
+  if (!accessToken && !clientRefreshToken) {
+    throw new Error('X-Kiro-Access-Token or X-Kiro-Refresh-Token required');
+  }
+
+  const keySource = clientRefreshToken || accessToken;
+  const keyHash = hashToken(keySource);
+
+  const stored = getStoredToken(keyHash);
+
+  if (stored && !isTokenExpired(stored)) {
+    return stored;
+  }
+
+  if (refreshLocks.has(keyHash)) {
+    tagLog('token', `[multi] Waiting for ongoing refresh (${keyHash.slice(0, 8)}...)`);
+    return refreshLocks.get(keyHash);
+  }
+
+  const promise = (async () => {
+    try {
+      const tokenToRefresh = stored || { accessToken, refreshToken: clientRefreshToken, authMethod, profileArn, region, provider, clientIdHash };
+
+      if (!tokenToRefresh.refreshToken) {
+        if (tokenToRefresh.accessToken) {
+          upsertToken(keyHash, tokenToRefresh);
+          return tokenToRefresh;
+        }
+        throw new Error('Token expired and no refreshToken available. Client must re-login in Kiro.');
+      }
+
+      // 첫 요청: expiresAt 없으면 accessToken이 유효하다고 가정하고 저장만
+      if (!stored && accessToken) {
+        const expiresAt = new Date(Date.now() + 3600 * 1000).toISOString();
+        const tokenToStore = { accessToken, refreshToken: clientRefreshToken, authMethod, profileArn, region, provider, clientIdHash, expiresAt };
+        upsertToken(keyHash, tokenToStore);
+        return tokenToStore;
+      }
+
+      tagLog('token', `[multi] Refreshing token (${keyHash.slice(0, 8)}...)`);
+      const refreshed = await refreshToken(tokenToRefresh);
+      upsertToken(keyHash, refreshed);
+      tagLog('token', `[multi] Token refreshed, new expiry: ${refreshed.expiresAt}`);
+      return refreshed;
+    } catch (err) {
+      tagError('token', `[multi] Refresh failed (${keyHash.slice(0, 8)}...):`, err.message);
+      deleteToken(keyHash);
+      throw err;
+    } finally {
+      refreshLocks.delete(keyHash);
+    }
+  })();
+
+  refreshLocks.set(keyHash, promise);
+  return promise;
 }

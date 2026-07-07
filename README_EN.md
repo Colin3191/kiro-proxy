@@ -1,4 +1,4 @@
-English | [中文](README.md)
+[한국어](README_KR.md) | [中文](README.md) | English
 
 # kiro-proxy
 
@@ -25,6 +25,57 @@ Server listens on `http://localhost:3456` by default.
 | `PORT` | `3456` | Listen port |
 | `PROXY_API_KEY` | None | When set, all requests must include this key for authentication. No validation when unset |
 | `HTTPS_PROXY` | None | HTTP/HTTPS proxy URL, e.g. `http://127.0.0.1:7890` |
+| `MULTI_USER` | `false` | `true` enables multi-user mode (same as `--multi-user` flag) |
+| `TOKEN_DB_PATH` | `~/.kiro-proxy/tokens.db` | Token database path for multi-user mode |
+| `DATABRICKS_APP_PORT` | - | Overrides PORT when set |
+
+## Multi-user Mode
+
+Allows multiple clients to use the proxy simultaneously with their own Kiro tokens. The server caches tokens in a SQLite DB and auto-refreshes on expiry.
+
+```bash
+# CLI flag
+node server.js --multi-user
+
+# Or environment variable
+MULTI_USER=true node server.js
+```
+
+Clients must include the following headers:
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `X-Kiro-Access-Token` | Yes* | Current access token |
+| `X-Kiro-Refresh-Token` | Yes* | Refresh token (used by server to auto-renew) |
+| `X-Kiro-Auth-Method` | No | `social` or `IdC` |
+| `X-Kiro-Profile-Arn` | No | Profile ARN |
+| `X-Kiro-Region` | No | AWS region |
+| `X-Kiro-Provider` | No | Provider type |
+
+\* At least one is required. Provide both to enable auto-renewal.
+
+Extracting tokens:
+
+```bash
+# Using the built-in script
+./scripts/extract-token.sh headers   # Output -H flags
+./scripts/extract-token.sh env       # Output export statements
+./scripts/extract-token.sh curl      # Output single-line curl headers
+
+# Use with curl
+eval curl http://localhost:3456/v1/messages \
+  -H "Content-Type: application/json" \
+  $(./scripts/extract-token.sh curl) \
+  -d '{"model": "claude-sonnet-4.6", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+Token flow:
+1. First request: validate token and store in DB
+2. Subsequent requests: use cached token from DB
+3. On expiry: server auto-refreshes and updates DB
+4. If refresh token itself expires: returns 401, client must submit a fresh token
+
+Without `--multi-user`, behaves exactly as before (reads local token file).
 
 ## API
 

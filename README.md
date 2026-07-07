@@ -1,4 +1,4 @@
-[English](README_EN.md) | 中文
+[English](README_EN.md) | [한국어](README_KR.md) | 中文
 
 # kiro-proxy
 
@@ -25,6 +25,57 @@ npx kiro-proxy
 | `PORT`   | `3456` | 监听端口 |
 | `PROXY_API_KEY` | 无 | 设置后所有请求需携带此 key 进行鉴权，未设置则不校验 |
 | `HTTPS_PROXY` | 无 | HTTP/HTTPS 代理地址，如 `http://127.0.0.1:7890` |
+| `MULTI_USER` | `false` | `true` 启用多用户模式（等同 `--multi-user` 参数） |
+| `TOKEN_DB_PATH` | `~/.kiro-proxy/tokens.db` | 多用户模式下的 Token 数据库路径 |
+| `DATABRICKS_APP_PORT` | - | 设置后优先于 PORT |
+
+## 多用户模式
+
+支持多客户端各自使用自己的 Kiro token 同时使用代理。服务器将 token 缓存到 SQLite DB，过期时自动刷新。
+
+```bash
+# CLI 参数
+node server.js --multi-user
+
+# 或环境变量
+MULTI_USER=true node server.js
+```
+
+客户端需传递以下请求头：
+
+| 请求头 | 必需 | 说明 |
+|--------|------|------|
+| `X-Kiro-Access-Token` | 是* | 当前 access token |
+| `X-Kiro-Refresh-Token` | 是* | refresh token（服务器用来自动续期） |
+| `X-Kiro-Auth-Method` | 否 | `social` 或 `IdC` |
+| `X-Kiro-Profile-Arn` | 否 | profile ARN |
+| `X-Kiro-Region` | 否 | AWS region |
+| `X-Kiro-Provider` | 否 | provider 类型 |
+
+\* 至少提供其中一个。建议同时传两个以启用自动续期。
+
+提取 token：
+
+```bash
+# 使用内置脚本
+./scripts/extract-token.sh headers   # 输出 -H 参数
+./scripts/extract-token.sh env       # 输出 export 语句
+./scripts/extract-token.sh curl      # 输出单行 curl headers
+
+# 配合 curl 使用
+eval curl http://localhost:3456/v1/messages \
+  -H "Content-Type: application/json" \
+  $(./scripts/extract-token.sh curl) \
+  -d '{"model": "claude-sonnet-4.6", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+Token 流程：
+1. 首次请求：验证 token 后存入 DB
+2. 后续请求：使用 DB 中的缓存 token
+3. 过期时：服务器自动刷新并更新 DB
+4. refresh token 本身过期：返回 401，客户端需提交新 token
+
+不使用 `--multi-user` 时行为与原版完全一致（读取本地 token 文件）。
 
 ## API
 
