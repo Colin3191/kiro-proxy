@@ -69,7 +69,7 @@ Install and log in to Kiro so that `~/.aws/sso/cache/kiro-auth-token.json` exist
 ## Quick Start
 
 ```bash
-npx @leecoder/kiro-proxy
+npx kiro-proxy
 ```
 
 Default port: `http://localhost:3456`

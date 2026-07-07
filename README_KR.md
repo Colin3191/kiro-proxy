@@ -69,7 +69,7 @@ Kiro를 설치하고 로그인해서 `~/.aws/sso/cache/kiro-auth-token.json`이 
 ## 빠른 시작
 
 ```bash
-npx @leecoder/kiro-proxy
+npx kiro-proxy
 ```
 
 서버 기본 포트: `http://localhost:3456`

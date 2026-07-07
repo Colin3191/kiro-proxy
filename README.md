@@ -69,7 +69,7 @@ Token 流程：
 ## 快速开始
 
 ```bash
-npx @leecoder/kiro-proxy
+npx kiro-proxy
 ```
 
 默认端口：`http://localhost:3456`
