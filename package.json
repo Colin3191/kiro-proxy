@@ -1,10 +1,13 @@
 {
   "name": "@leecoder/kiro-proxy",
   "version": "0.3.0",
-  "description": "Kiro API proxy with OpenAI and Anthropic compatible endpoints — Databricks Apps edition",
+  "description": "Kiro API proxy with OpenAI and Anthropic compatible endpoints — multi-user edition",
   "type": "module",
   "bin": {
     "kiro-proxy": "./server.js"
+  },
+  "scripts": {
+    "start": "node server.js"
   },
   "engines": {
     "node": ">=18"

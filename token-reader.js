@@ -256,13 +256,13 @@ const refreshLocks = new Map();
  * @param {object} headers — { accessToken, refreshToken, ?authMethod, ?profileArn, ?region, ?provider }
  */
 export async function getAccessTokenFromRequest(headers) {
-  const { accessToken, refreshToken, authMethod, profileArn, region, provider, clientIdHash } = headers;
+  const { accessToken, refreshToken: clientRefreshToken, authMethod, profileArn, region, provider, clientIdHash } = headers;
 
-  if (!accessToken && !refreshToken) {
+  if (!accessToken && !clientRefreshToken) {
     throw new Error('X-Kiro-Access-Token or X-Kiro-Refresh-Token required');
   }
 
-  const keySource = refreshToken || accessToken;
+  const keySource = clientRefreshToken || accessToken;
   const keyHash = hashToken(keySource);
 
   const stored = getStoredToken(keyHash);
@@ -278,14 +278,22 @@ export async function getAccessTokenFromRequest(headers) {
 
   const promise = (async () => {
     try {
-      const tokenToRefresh = stored || { accessToken, refreshToken, authMethod, profileArn, region, provider, clientIdHash };
+      const tokenToRefresh = stored || { accessToken, refreshToken: clientRefreshToken, authMethod, profileArn, region, provider, clientIdHash };
 
       if (!tokenToRefresh.refreshToken) {
-        if (tokenToRefresh.accessToken && tokenToRefresh.expiresAt && new Date(tokenToRefresh.expiresAt) > new Date()) {
+        if (tokenToRefresh.accessToken) {
           upsertToken(keyHash, tokenToRefresh);
           return tokenToRefresh;
         }
         throw new Error('Token expired and no refreshToken available. Client must re-login in Kiro.');
+      }
+
+      // 첫 요청: expiresAt 없으면 accessToken이 유효하다고 가정하고 저장만
+      if (!stored && accessToken) {
+        const expiresAt = new Date(Date.now() + 3600 * 1000).toISOString();
+        const tokenToStore = { accessToken, refreshToken: clientRefreshToken, authMethod, profileArn, region, provider, clientIdHash, expiresAt };
+        upsertToken(keyHash, tokenToStore);
+        return tokenToStore;
       }
 
       tagLog('token', `[multi] Refreshing token (${keyHash.slice(0, 8)}...)`);
