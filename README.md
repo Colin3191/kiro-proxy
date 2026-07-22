@@ -2,9 +2,9 @@
 
 # kiro-proxy
 
-让 [Kiro](https://kiro.dev) 订阅内含的 Claude 模型可以在 Claude Code 中使用。
+让 [Kiro](https://kiro.dev) 订阅内含的 Claude 模型可以在 Claude Code 和 Codex CLI 中使用。
 
-通过读取 Kiro 的认证 token，代理请求到 Amazon Q Developer，暴露 OpenAI 和 Anthropic 兼容的 API 接口。
+通过读取 Kiro 的认证 token，代理请求到新版 Kiro Runtime，暴露 OpenAI Responses 和 Anthropic 兼容的 API 接口。
 
 ## 前提
 
@@ -25,6 +25,54 @@ npx kiro-proxy
 | `PORT`   | `3456` | 监听端口 |
 | `PROXY_API_KEY` | 无 | 设置后所有请求需携带此 key 进行鉴权，未设置则不校验 |
 | `HTTPS_PROXY` | 无 | HTTP/HTTPS 代理地址，如 `http://127.0.0.1:7890` |
+| `KIRO_VERSION` | `1.0.231` | 发送到 Kiro 的客户端版本标识 |
+
+当前实现使用与 Kiro `1.0.231` 相同的 Runtime 协议，并自动处理服务地址和系统提示词的兼容逻辑。
+
+## 与 Claude Code 集成
+
+Claude Code 默认使用 Anthropic 官方 model ID，需要通过环境变量映射到 Q Developer 的 model ID。
+
+在 `~/.claude/settings.json` 中添加：
+
+```json
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "any",
+    "ANTHROPIC_BASE_URL": "http://localhost:3456",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4.6",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4.6",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4.5"
+  },
+  "model": "sonnet"
+}
+```
+
+`model` 可选值：`sonnet`、`opus`、`haiku`，添加 `[1m]` 后缀可启用 1M 上下文窗口（如 `"opus[1m]"`）。
+
+> 注意：不要设置 `ANTHROPIC_MODEL` 环境变量，它会覆盖 `model` 字段，导致上下文窗口等配置失效。
+
+## 与 Codex CLI 集成
+
+在 `~/.codex/config.toml` 中添加：
+
+```toml
+model_provider = "kiro"
+model = "claude-sonnet-4.6"
+
+[model_providers.kiro]
+name = "Kiro Proxy"
+base_url = "http://localhost:3456/v1"
+env_key = "KIRO_PROXY_API_KEY"
+wire_api = "responses"
+```
+
+启动 Codex 前设置任意 API key；如果代理配置了 `PROXY_API_KEY`，两者需保持一致：
+
+```bash
+export KIRO_PROXY_API_KEY=any
+codex
+```
 
 ## API
 
@@ -50,18 +98,18 @@ curl http://localhost:3456/v1/messages \
   -d '{"model": "claude-sonnet-4.6", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}], "stream": true}'
 ```
 
-### POST /v1/chat/completions — OpenAI 兼容
+### POST /v1/responses — OpenAI Responses 兼容
 
 ```bash
 # 非流式
-curl http://localhost:3456/v1/chat/completions \
+curl http://localhost:3456/v1/responses \
   -H "Content-Type: application/json" \
-  -d '{"model": "claude-sonnet-4.6", "messages": [{"role": "user", "content": "Hello"}]}'
+  -d '{"model": "claude-sonnet-4.6", "input": "Hello"}'
 
 # 流式
-curl http://localhost:3456/v1/chat/completions \
+curl http://localhost:3456/v1/responses \
   -H "Content-Type: application/json" \
-  -d '{"model": "claude-sonnet-4.6", "messages": [{"role": "user", "content": "Hello"}], "stream": true}'
+  -d '{"model": "claude-sonnet-4.6", "input": "Hello", "stream": true}'
 ```
 
 ### GET /health
@@ -86,29 +134,6 @@ curl http://localhost:3456/credits?period=30d
 curl http://localhost:3456/credits?period=all
 ```
 
-## 与 Claude Code 集成
-
-Claude Code 默认使用 Anthropic 官方 model ID，需要通过环境变量映射到 Q Developer 的 model ID。
-
-在 `~/.claude/settings.json` 中添加：
-
-```json
-{
-  "env": {
-    "ANTHROPIC_AUTH_TOKEN": "any",
-    "ANTHROPIC_BASE_URL": "http://localhost:3456",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4.6",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4.6",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4.5"
-  },
-  "model": "sonnet"
-}
-```
-
-`model` 可选值：`sonnet`、`opus`、`haiku`，添加 `[1m]` 后缀可启用 1M 上下文窗口（如 `"opus[1m]"`）。
-
-> 注意：不要设置 `ANTHROPIC_MODEL` 环境变量，它会覆盖 `model` 字段，导致上下文窗口等配置失效。
-
 ## 代理设置
 
 自 2026 年 5 月 1 日起，Kiro 上的 Claude 模型无法在中国大陆及港澳台地区使用。如果遇到 `Invalid model` 错误，请配置代理。
@@ -126,4 +151,4 @@ HTTPS_PROXY=http://127.0.0.1:7890 npx kiro-proxy
 
 ## 相关项目
 
-- [kiro-web-search](https://github.com/Colin3191/kiro-web-search) — 将 Kiro 内置的联网搜索封装为 MCP server，可在 Claude Code 等客户端中使用
+- [kiro-web-search](https://github.com/Colin3191/kiro-web-search) — 将 Kiro 内置的联网搜索封装为 CLI，可在 Claude Code 等客户端中使用

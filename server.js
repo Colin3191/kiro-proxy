@@ -3,10 +3,21 @@ import express from 'express';
 import crypto from 'crypto';
 import { getAccessToken } from './token-reader.js';
 import { createClient, chat, chatStream, listAvailableModels } from './q-client.js';
-import { c, log, tagLog, logSummary, reqId, tagError } from './logger.js';
+import { c, log, tagLog, logSummary, reqId, tagError, tagWarn } from './logger.js';
 import { countMessages, countContent } from './token-counter.js';
 import { recordUsage, queryUsage, todaySummary } from './usage-tracker.js';
 import { initGlobalProxy } from './proxy-config.js';
+import {
+  ResponseValidationError,
+  ResponsesStreamAdapter,
+  buildResponsesResponse,
+  convertResponsesRequest,
+} from './responses-api.js';
+import {
+  normalizeAnthropicModelOptions,
+  normalizeResponsesModelOptions,
+  resolveAdditionalModelRequestFields,
+} from './model-options.js';
 
 const proxyUrl = initGlobalProxy();
 if (proxyUrl) tagLog('proxy', `Using proxy: ${proxyUrl}`);
@@ -29,6 +40,9 @@ app.use(authMiddleware);
 
 let cachedClient = null;
 let cachedToken = null;
+let modelCatalogCache = null;
+let modelCatalogPromise = null;
+const MODEL_CATALOG_TTL_MS = 5 * 60 * 1000;
 
 async function getClient() {
   const tokenData = await getAccessToken();
@@ -41,6 +55,42 @@ async function getClient() {
     cachedToken = tokenData.accessToken;
   }
   return { client: cachedClient, tokenData };
+}
+
+async function getModelCatalog(tokenData) {
+  if (modelCatalogCache?.accessToken === tokenData.accessToken && modelCatalogCache.expiresAt > Date.now()) {
+    return modelCatalogCache.value;
+  }
+  if (modelCatalogPromise?.accessToken === tokenData.accessToken) return modelCatalogPromise.value;
+
+  const value = listAvailableModels(tokenData.accessToken, {
+    profileArn: tokenData.profileArn,
+    authMethod: tokenData.authMethod,
+    provider: tokenData.provider,
+  }).then(result => {
+    modelCatalogCache = {
+      accessToken: tokenData.accessToken,
+      expiresAt: Date.now() + MODEL_CATALOG_TTL_MS,
+      value: result,
+    };
+    return result;
+  }).finally(() => {
+    modelCatalogPromise = null;
+  });
+  modelCatalogPromise = { accessToken: tokenData.accessToken, value };
+  return value;
+}
+
+async function resolveModelRequestFields(tokenData, modelId, normalizedOptions) {
+  if (!normalizedOptions || !modelId || modelId === 'auto') return undefined;
+  try {
+    const catalog = await getModelCatalog(tokenData);
+    const model = catalog.models.find(item => item.modelId === modelId);
+    return resolveAdditionalModelRequestFields(model?.additionalModelRequestFieldsSchema, normalizedOptions);
+  } catch (error) {
+    tagWarn('model-options', `Failed to resolve model effort: ${error.message}`);
+    return undefined;
+  }
 }
 
 function msgId() {
@@ -58,7 +108,19 @@ app.post('/v1/messages', async (req, res) => {
     }
 
     const { client, tokenData } = await getClient();
-    const opts = { messages, system, tools, profileArn: tokenData.profileArn, modelId: model };
+    const additionalModelRequestFields = await resolveModelRequestFields(
+      tokenData,
+      model,
+      normalizeAnthropicModelOptions(req.body),
+    );
+    const opts = {
+      messages,
+      system,
+      tools,
+      profileArn: tokenData.profileArn,
+      modelId: model,
+      additionalModelRequestFields,
+    };
     const rid = reqId();
     const start = Date.now();
 
@@ -96,6 +158,7 @@ app.post('/v1/messages', async (req, res) => {
       try {
         let hasToolUse = false;
         let hasThinkingBlock = false;
+        let upstreamStopReason;
         let summary;
         const outputParts = [];
 
@@ -114,6 +177,18 @@ app.post('/v1/messages', async (req, res) => {
               type: 'content_block_delta', index: blockIndex,
               delta: { type: 'thinking_delta', thinking: chunk.text },
             });
+          } else if (chunk.type === 'redacted_thinking') {
+            if (hasThinkingBlock) {
+              send('content_block_stop', { type: 'content_block_stop', index: blockIndex });
+              blockIndex++;
+              hasThinkingBlock = false;
+            }
+            send('content_block_start', {
+              type: 'content_block_start', index: blockIndex,
+              content_block: { type: 'redacted_thinking', data: chunk.data },
+            });
+            send('content_block_stop', { type: 'content_block_stop', index: blockIndex });
+            blockIndex++;
           } else if (chunk.type === 'thinking_signature') {
             // 关闭 thinking 块，附带 signature
             if (hasThinkingBlock) {
@@ -176,6 +251,8 @@ app.post('/v1/messages', async (req, res) => {
           } else if (chunk.type === 'summary') {
             summary = chunk.stats;
             if (typeof chunk.meteringUsage === 'number') recordUsage(chunk.meteringUsage, model);
+          } else if (chunk.type === 'stop_reason') {
+            upstreamStopReason = chunk.stopReason;
           }
         }
 
@@ -189,7 +266,7 @@ app.post('/v1/messages', async (req, res) => {
           send('content_block_stop', { type: 'content_block_stop', index: blockIndex });
         }
 
-        const stopReason = hasToolUse ? 'tool_use' : 'end_turn';
+        const stopReason = hasToolUse ? 'tool_use' : (upstreamStopReason || 'end_turn');
         const outputTokens = countContent(outputParts.join(''));
         send('message_delta', {
           type: 'message_delta',
@@ -232,85 +309,86 @@ app.post('/v1/messages', async (req, res) => {
 });
 
 // ============================================================
-// POST /v1/chat/completions — OpenAI compatible
+// POST /v1/responses — OpenAI Responses API compatible
 // ============================================================
-app.post('/v1/chat/completions', async (req, res) => {
+app.post('/v1/responses', async (req, res) => {
   try {
-    const { messages: rawMsgs, model, stream } = req.body;
-    if (!rawMsgs?.length) return res.status(400).json({ error: 'messages required' });
-
-    // 简单转换 OpenAI → Anthropic 格式
-    let system;
-    const messages = [];
-    for (const m of rawMsgs) {
-      if (m.role === 'system') { system = m.content; continue; }
-      messages.push({ role: m.role, content: m.content });
-    }
+    const { model, stream } = req.body;
+    const converted = convertResponsesRequest(req.body);
+    const { messages, system, tools, modelId } = converted;
 
     const { client, tokenData } = await getClient();
-    const opts = { messages, system, profileArn: tokenData.profileArn, modelId: model };
+    const additionalModelRequestFields = await resolveModelRequestFields(
+      tokenData,
+      modelId,
+      normalizeResponsesModelOptions(req.body),
+    );
+    const opts = { messages, system, tools, profileArn: tokenData.profileArn, modelId, additionalModelRequestFields };
     const rid = reqId();
     const start = Date.now();
 
-    log('POST', '/v1/chat/completions', rid, {
+    log('POST', '/v1/responses', rid, {
       model: model || 'default',
       stream: !!stream,
       messages: messages.length,
+      tools: tools?.length || 0,
     });
 
     if (stream) {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
-      const responseId = `chatcmpl-${crypto.randomUUID()}`;
-      const created = Math.floor(Date.now() / 1000);
       const inputTokens = countMessages(messages, system);
-      let summary;
       const outputParts = [];
+      const adapter = new ResponsesStreamAdapter(req.body);
+      const send = event => res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      for (const event of adapter.start()) send(event);
 
-      for await (const chunk of chatStream(client, opts)) {
-        if (chunk.type === 'content') {
-          outputParts.push(chunk.content);
-          res.write(`data: ${JSON.stringify({
-            id: responseId, object: 'chat.completion.chunk', created,
-            model: model || 'q-developer',
-            choices: [{ index: 0, delta: { content: chunk.content }, finish_reason: null }],
-          })}\n\n`);
-        } else if (chunk.type === 'summary') {
-          summary = chunk.stats;
-          if (typeof chunk.meteringUsage === 'number') recordUsage(chunk.meteringUsage, model);
+      try {
+        for await (const chunk of chatStream(client, opts)) {
+          if (chunk.type === 'content') outputParts.push(chunk.content);
+          else if (chunk.type === 'thinking') outputParts.push(chunk.text);
+          else if (chunk.type === 'tool_use_end') outputParts.push(JSON.stringify(chunk.input));
+          else if (chunk.type === 'summary' && typeof chunk.meteringUsage === 'number') {
+            recordUsage(chunk.meteringUsage, model);
+          }
+          for (const event of adapter.push(chunk)) send(event);
         }
+        const outputTokens = countContent(outputParts.join(''));
+        for (const event of adapter.complete({ inputTokens, outputTokens })) send(event);
+        res.end();
+        const summary = adapter.summary || {};
+        summary.estTokens = `~tokens: in=${inputTokens} out=${outputTokens}`;
+        logSummary(rid, Date.now() - start, summary);
+      } catch (err) {
+        tagError('responses-stream', err.message || err);
+        send(adapter.event('error', {
+          error: { type: 'server_error', code: 'server_error', message: err.message, param: null },
+        }));
+        res.end();
       }
-      res.write(`data: ${JSON.stringify({
-        id: responseId, object: 'chat.completion.chunk', created,
-        model: model || 'q-developer',
-        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-      })}\n\n`);
-      res.write('data: [DONE]\n\n');
-      res.end();
-      const outputTokens = countContent(outputParts.join(''));
-      const s = summary || {};
-      s.estTokens = `~tokens: in=${inputTokens} out=${outputTokens}`;
-      logSummary(rid, Date.now() - start, s);
     } else {
       const result = await chat(client, opts);
       if (typeof result.meteringUsage === 'number') recordUsage(result.meteringUsage, model);
-      const text = result.content.filter(b => b.type === 'text').map(b => b.text).join('');
-      const promptTokens = countMessages(messages, system);
-      const completionTokens = countContent(text);
+      const inputTokens = countMessages(messages, system);
+      const outputTokens = countContent(result.content);
       const s = result.stats || {};
-      s.estTokens = `~tokens: in=${promptTokens} out=${completionTokens}`;
+      s.estTokens = `~tokens: in=${inputTokens} out=${outputTokens}`;
       logSummary(rid, Date.now() - start, s);
-      res.json({
-        id: `chatcmpl-${crypto.randomUUID()}`, object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000), model: model || 'q-developer',
-        choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }],
-        usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
-      });
+      const response = buildResponsesResponse({ request: req.body, result, inputTokens, outputTokens });
+      res.json(response);
     }
   } catch (err) {
-    tagError('openai', err.message || err);
-    res.status(500).json({ error: { message: err.message } });
+    tagError('responses', err.message || err);
+    const status = err instanceof ResponseValidationError ? err.status : (err.message?.includes('expired') ? 401 : 500);
+    res.status(status).json({
+      error: {
+        message: err.message,
+        type: status === 400 ? 'invalid_request_error' : (status === 401 ? 'authentication_error' : 'server_error'),
+        param: null,
+        code: status === 400 ? 'invalid_request' : null,
+      },
+    });
   }
 });
 
@@ -320,9 +398,7 @@ app.post('/v1/chat/completions', async (req, res) => {
 app.get('/v1/models', async (_req, res) => {
   try {
     const tokenData = await getAccessToken();
-    const { models, defaultModel } = await listAvailableModels(tokenData.accessToken, {
-      profileArn: tokenData.profileArn, authMethod: tokenData.authMethod, provider: tokenData.provider,
-    });
+    const { models, defaultModel } = await getModelCatalog(tokenData);
     res.json({
       object: 'list',
       data: models.map(m => ({
@@ -339,9 +415,7 @@ app.get('/v1/models', async (_req, res) => {
 app.get('/q/models', async (_req, res) => {
   try {
     const tokenData = await getAccessToken();
-    const result = await listAvailableModels(tokenData.accessToken, {
-      profileArn: tokenData.profileArn, authMethod: tokenData.authMethod, provider: tokenData.provider,
-    });
+    const result = await getModelCatalog(tokenData);
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: { message: err.message } });
@@ -369,7 +443,7 @@ app.get('/credits', (_req, res) => {
 app.listen(PORT, async () => {
   console.log(`${c.cyan}Kiro Proxy${c.reset} running on ${c.green}http://localhost:${PORT}${c.reset}`);
   console.log(`  ${c.gray}Anthropic:${c.reset} http://localhost:${PORT}/v1/messages`);
-  console.log(`  ${c.gray}OpenAI:   ${c.reset} http://localhost:${PORT}/v1/chat/completions`);
+  console.log(`  ${c.gray}OpenAI:   ${c.reset} http://localhost:${PORT}/v1/responses`);
   console.log(`  ${c.gray}Models:   ${c.reset} http://localhost:${PORT}/v1/models`);
   console.log(`  ${c.gray}Credits: ${c.reset} http://localhost:${PORT}/credits`);
   console.log(`  ${c.gray}Auth:     ${c.reset} ${PROXY_API_KEY ? `${c.green}enabled${c.reset} (PROXY_API_KEY)` : `${c.yellow}disabled${c.reset} (no PROXY_API_KEY set)`}`);

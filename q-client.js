@@ -1,23 +1,18 @@
-import { CodeWhispererStreaming, GenerateAssistantResponseCommand } from '@aws/codewhisperer-streaming-client';
+import { GenerateAssistantResponseCommand, KiroRuntimeClient } from './kiro-runtime-client.js';
 import crypto from 'crypto';
 import os from 'os';
-import { createProxyAgent } from './proxy-config.js';
 
 // region → endpoint 映射
 const REGION_ENDPOINTS = {
-  'us-east-1': 'https://q.us-east-1.amazonaws.com',
-  'eu-west-1': 'https://q.eu-west-1.amazonaws.com',
-  'ap-southeast-1': 'https://q.ap-southeast-1.amazonaws.com',
-  'ap-northeast-1': 'https://q.ap-northeast-1.amazonaws.com',
-  'eu-central-1': 'https://q.eu-central-1.amazonaws.com',
-  'ap-south-1': 'https://q.ap-south-1.amazonaws.com',
-  'ca-central-1': 'https://q.ca-central-1.amazonaws.com',
+  'us-east-1': 'https://runtime.us-east-1.kiro.dev',
+  'eu-central-1': 'https://runtime.eu-central-1.kiro.dev',
+  'us-gov-west-1': 'https://runtime.us-gov-west-1.kiro.dev',
 };
 const DEFAULT_REGION = 'us-east-1';
-const KIRO_VERSION = process.env.KIRO_VERSION || '0.11.107';
+const KIRO_VERSION = process.env.KIRO_VERSION || '1.0.231';
 
 function buildUserAgent(machineId) {
-  return `KiroIDE ${KIRO_VERSION} ${machineId || os.hostname()}`;
+  return `kiro-ide/${KIRO_VERSION} md/machineId-${machineId || os.hostname()}`;
 }
 
 function regionFromArn(arn) {
@@ -27,44 +22,7 @@ function regionFromArn(arn) {
 }
 
 function endpointForRegion(region) {
-  return REGION_ENDPOINTS[region] || `https://q.${region}.amazonaws.com`;
-}
-
-function addRequiredHeaders(client, { agentMode = 'vibe', optOut = true, authMethod, provider } = {}) {
-  if (optOut) {
-    client.middlewareStack.add(
-      (next) => async (args) => {
-        args.request.headers = { ...args.request.headers, 'x-amzn-codewhisperer-optout': 'true' };
-        return next(args);
-      },
-      { step: 'build', name: 'optOutHeader' }
-    );
-  }
-  client.middlewareStack.add(
-    (next) => async (args) => {
-      args.request.headers = { ...args.request.headers, 'x-amzn-kiro-agent-mode': agentMode };
-      return next(args);
-    },
-    { step: 'build', name: 'agentModeHeader' }
-  );
-  if (authMethod === 'external_idp') {
-    client.middlewareStack.add(
-      (next) => async (args) => {
-        args.request.headers = { ...args.request.headers, TokenType: 'EXTERNAL_IDP' };
-        return next(args);
-      },
-      { step: 'build', name: 'tokenTypeHeader' }
-    );
-  }
-  if (provider === 'Internal') {
-    client.middlewareStack.add(
-      (next) => async (args) => {
-        args.request.headers = { ...args.request.headers, 'redirect-for-internal': 'true' };
-        return next(args);
-      },
-      { step: 'build', name: 'redirectForInternal' }
-    );
-  }
+  return process.env.KIRO_RUNTIME_ENDPOINT || REGION_ENDPOINTS[region] || `https://runtime.${region}.kiro.dev`;
 }
 
 export function createClient(accessToken, { endpoint, region, authMethod, profileArn, provider, machineId } = {}) {
@@ -72,25 +30,18 @@ export function createClient(accessToken, { endpoint, region, authMethod, profil
   const finalRegion = region || arnRegion || DEFAULT_REGION;
   const finalEndpoint = endpoint || endpointForRegion(finalRegion);
 
-  const clientConfig = {
+  return new KiroRuntimeClient({
     region: finalRegion,
     endpoint: finalEndpoint,
     token: { token: accessToken },
     customUserAgent: buildUserAgent(machineId),
-  };
-
-  const proxyAgent = createProxyAgent();
-  if (proxyAgent) {
-    clientConfig.requestHandler = { httpsAgent: proxyAgent };
-  }
-
-  const client = new CodeWhispererStreaming(clientConfig);
-  addRequiredHeaders(client, { authMethod, provider });
-  return client;
+    authMethod,
+    provider,
+  });
 }
 
 // ============================================================
-// Anthropic tools → CodeWhisperer toolSpecification
+// Anthropic tools → Kiro Runtime toolSpecification
 // ============================================================
 function convertTools(tools) {
   if (!tools || tools.length === 0) return undefined;
@@ -99,20 +50,32 @@ function convertTools(tools) {
     .map(t => ({
       toolSpecification: {
         name: t.name,
-        description: (t.description || '').slice(0, 10000),
-        inputSchema: { json: t.input_schema || t.parameters || {} },
+        description: (t.description?.trim() || t.name || 'tool').slice(0, 10000),
+        inputSchema: { json: normalizeJsonSchema(t.input_schema || t.parameters || {}) },
       },
     }));
 }
 
+function normalizeJsonSchema(schema) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
+    return { type: 'object', properties: {} };
+  }
+  const normalized = structuredClone(schema);
+  for (const key of ['title', 'default', 'examples', '$id', '$schema']) delete normalized[key];
+  if (normalized.required == null || !Array.isArray(normalized.required)) delete normalized.required;
+  if (!normalized.type) normalized.type = 'object';
+  if (normalized.type === 'object' && !normalized.properties) normalized.properties = {};
+  return normalized;
+}
+
 // ============================================================
-// Anthropic messages → CodeWhisperer conversationState
+// Anthropic messages → Kiro Runtime conversationState
 // ============================================================
 
 /**
- * 从 Anthropic content blocks 中提取图片，转换为 CodeWhisperer 格式
+ * 从 Anthropic content blocks 中提取图片，转换为 Kiro Runtime 格式
  * Anthropic 格式: { type: "image", source: { type: "base64", media_type: "image/png", data: "..." } }
- * CodeWhisperer 格式: { format: "png", source: { bytes: Buffer } }
+ * Kiro Runtime 格式: { format: "png", source: { bytes: base64 } }
  */
 function extractImages(content) {
   if (!Array.isArray(content)) return [];
@@ -122,8 +85,9 @@ function extractImages(content) {
   for (const block of content) {
     if (block.type === 'image' && block.source) {
       if (block.source.type === 'base64' && block.source.data) {
-        const format = formatMap[block.source.media_type] || 'jpeg';
-        images.push({ format, source: { bytes: Buffer.from(block.source.data, 'base64') } });
+        const format = formatMap[block.source.media_type];
+        if (!format) throw new Error(`Unsupported image format: ${block.source.media_type || 'unknown'}`);
+        images.push({ format, source: { bytes: normalizeBase64(block.source.data) } });
       } else if (block.source.type === 'url' && block.source.url) {
         // data URL: data:image/png;base64,iVBOR...
         const url = block.source.url;
@@ -131,8 +95,9 @@ function extractImages(content) {
           const parts = url.split(',');
           if (parts.length >= 2) {
             const mimeMatch = parts[0].match(/data:(image\/\w+)/);
-            const format = mimeMatch ? (formatMap[mimeMatch[1]] || 'jpeg') : 'jpeg';
-            images.push({ format, source: { bytes: Buffer.from(parts[1], 'base64') } });
+            const format = mimeMatch && formatMap[mimeMatch[1]];
+            if (!format) throw new Error(`Unsupported image format: ${mimeMatch?.[1] || 'unknown'}`);
+            images.push({ format, source: { bytes: normalizeBase64(parts[1]) } });
           }
         }
       }
@@ -144,13 +109,20 @@ function extractImages(content) {
         const parts = url.split(',');
         if (parts.length >= 2) {
           const mimeMatch = parts[0].match(/data:(image\/\w+)/);
-          const format = mimeMatch ? (formatMap[mimeMatch[1]] || 'jpeg') : 'jpeg';
-          images.push({ format, source: { bytes: Buffer.from(parts[1], 'base64') } });
+          const format = mimeMatch && formatMap[mimeMatch[1]];
+          if (!format) throw new Error(`Unsupported image format: ${mimeMatch?.[1] || 'unknown'}`);
+          images.push({ format, source: { bytes: normalizeBase64(parts[1]) } });
         }
       }
     }
   }
   return images;
+}
+
+function normalizeBase64(value) {
+  const bytes = Buffer.from(value, 'base64');
+  if (bytes.length === 0) throw new Error('Image contains invalid or empty base64 data');
+  return bytes.toString('base64');
 }
 
 /**
@@ -166,20 +138,26 @@ function extractText(content) {
 }
 
 /**
- * 从 assistant content blocks 中提取 thinking → CodeWhisperer reasoningContent
+ * 从 assistant content blocks 中提取 thinking → Kiro Runtime reasoningContent
  * Anthropic 格式: { type: "thinking", thinking: "...", signature: "..." }
- * CodeWhisperer 格式: { reasoningText: { text, signature? } }
+ * Kiro Runtime 格式: { reasoningText: { text, signature } } 或 { redactedContent }
  */
 function extractReasoning(content) {
   if (!Array.isArray(content)) return undefined;
+  const redacted = content.find(b => b.type === 'redacted_thinking' && typeof b.data === 'string' && b.data.length > 0);
+  if (redacted) return { redactedContent: redacted.data };
+
   const thinkingBlocks = content.filter(b => b.type === 'thinking' && typeof b.thinking === 'string' && b.thinking.length > 0);
   if (thinkingBlocks.length === 0) return undefined;
   const text = thinkingBlocks.map(b => b.thinking).join('');
   const sig = thinkingBlocks.map(b => b.signature).find(s => typeof s === 'string' && s.length > 0);
+  // Kiro Runtime only accepts replayed reasoning when it carries the model's
+  // signature. Unsigned thinking is display-only and must not enter history.
+  if (!sig) return undefined;
   return {
     reasoningText: {
       text,
-      ...(sig && { signature: sig }),
+      signature: sig,
     },
   };
 }
@@ -223,25 +201,209 @@ function extractToolResults(content) {
 }
 
 /**
- * 将 Anthropic 格式的 messages + tools + system 转换为 CodeWhisperer conversationState
+ * 将 Anthropic 格式的 messages + tools + system 转换为 Kiro Runtime 请求
  * 支持完整的工具调用循环
  */
-export function convertMessages(messages, { modelId, system, tools } = {}) {
+function isUserMessage(message) {
+  return !!message?.userInputMessage;
+}
+
+function isAssistantMessage(message) {
+  return !!message?.assistantResponseMessage;
+}
+
+function toolResultsOf(message) {
+  return message?.userInputMessage?.userInputMessageContext?.toolResults || [];
+}
+
+function hasUserText(message) {
+  return !!message?.userInputMessage?.content?.trim();
+}
+
+function toolUsesOf(message) {
+  return message?.assistantResponseMessage?.toolUses || [];
+}
+
+function failureResult(toolUseId) {
+  return {
+    toolUseId,
+    content: [{ text: 'Tool execution failed' }],
+    status: 'error',
+  };
+}
+
+/** Bring arbitrary OpenAI/Anthropic history into Kiro Runtime's strict shape. */
+export function normalizeConversation(messages, modelId) {
+  let result = [...messages];
+
+  if (!isUserMessage(result[0])) {
+    result.unshift({ userInputMessage: { content: 'Hello', modelId, origin: 'AI_EDITOR' } });
+  }
+
+  result = result.filter((message, index) => {
+    if (!isUserMessage(message)) return true;
+    return index === 0 || hasUserText(message) || toolResultsOf(message).length > 0;
+  });
+
+  // Tool results can arrive as multiple adjacent user messages when tools run
+  // concurrently. Kiro expects one user message containing the whole batch.
+  const mergedResults = [];
+  for (let index = 0; index < result.length;) {
+    const message = result[index];
+    if (!isUserMessage(message) || hasUserText(message) || toolResultsOf(message).length === 0) {
+      mergedResults.push(message);
+      index++;
+      continue;
+    }
+    const batch = [];
+    const seen = new Set();
+    while (index < result.length && isUserMessage(result[index]) && !hasUserText(result[index]) && toolResultsOf(result[index]).length > 0) {
+      for (const toolResult of toolResultsOf(result[index])) {
+        if (!toolResult.toolUseId || !seen.has(toolResult.toolUseId)) {
+          if (toolResult.toolUseId) seen.add(toolResult.toolUseId);
+          batch.push(toolResult);
+        }
+      }
+      index++;
+    }
+    mergedResults.push({
+      userInputMessage: {
+        content: '',
+        modelId,
+        origin: 'AI_EDITOR',
+        userInputMessageContext: { toolResults: batch },
+      },
+    });
+  }
+  result = mergedResults;
+
+  // Remove duplicate tool-use IDs before matching results.
+  result = result.map(message => {
+    if (!isAssistantMessage(message)) return message;
+    const seen = new Set();
+    const toolUses = toolUsesOf(message).filter(toolUse => {
+      if (!toolUse.toolUseId || !seen.has(toolUse.toolUseId)) {
+        if (toolUse.toolUseId) seen.add(toolUse.toolUseId);
+        return true;
+      }
+      return false;
+    });
+    return {
+      assistantResponseMessage: {
+        ...message.assistantResponseMessage,
+        ...(toolUses.length > 0 ? { toolUses } : { toolUses: undefined }),
+      },
+    };
+  });
+
+  // Every assistant tool-use batch must be followed by exactly matching
+  // results. Preserve real results and synthesize failures only for gaps.
+  const paired = [];
+  for (let index = 0; index < result.length; index++) {
+    const message = result[index];
+    paired.push(message);
+    const toolUses = toolUsesOf(message);
+    if (toolUses.length === 0) continue;
+
+    const next = result[index + 1];
+    const existing = isUserMessage(next) ? toolResultsOf(next) : [];
+    const expectedIds = new Set(toolUses.map((toolUse, toolIndex) => toolUse.toolUseId || `toolUse_${toolIndex + 1}`));
+    const seen = new Set();
+    const matching = existing.filter(toolResult => toolResult.toolUseId && expectedIds.has(toolResult.toolUseId) && !seen.has(toolResult.toolUseId) && seen.add(toolResult.toolUseId));
+    const missing = [...expectedIds].filter(id => !seen.has(id)).map(failureResult);
+    const toolResults = [...matching, ...missing];
+
+    if (isUserMessage(next)) {
+      paired.push({
+        userInputMessage: {
+          ...next.userInputMessage,
+          userInputMessageContext: {
+            ...next.userInputMessage.userInputMessageContext,
+            toolResults,
+          },
+        },
+      });
+      index++;
+    } else {
+      paired.push({
+        userInputMessage: {
+          content: '',
+          modelId,
+          origin: 'AI_EDITOR',
+          userInputMessageContext: { toolResults },
+        },
+      });
+    }
+  }
+  result = paired;
+
+  // Strip orphan results that do not directly answer the preceding assistant.
+  result = result.map((message, index) => {
+    if (!isUserMessage(message) || toolResultsOf(message).length === 0) return message;
+    const previousIds = new Set(toolUsesOf(result[index - 1]).map(toolUse => toolUse.toolUseId).filter(Boolean));
+    const filtered = toolResultsOf(message).filter(toolResult => toolResult.toolUseId && previousIds.has(toolResult.toolUseId));
+    if (filtered.length > 0) {
+      return {
+        userInputMessage: {
+          ...message.userInputMessage,
+          userInputMessageContext: {
+            ...message.userInputMessage.userInputMessageContext,
+            toolResults: filtered,
+          },
+        },
+      };
+    }
+    if (hasUserText(message)) {
+      const { userInputMessageContext, ...userInputMessage } = message.userInputMessage;
+      return { userInputMessage };
+    }
+    return null;
+  }).filter(Boolean);
+
+  const alternating = [result[0]];
+  for (const message of result.slice(1)) {
+    const previous = alternating.at(-1);
+    if (isUserMessage(previous) && isUserMessage(message)) {
+      alternating.push({ assistantResponseMessage: { content: 'understood' } });
+    } else if (isAssistantMessage(previous) && isAssistantMessage(message)) {
+      alternating.push({ userInputMessage: { content: 'Continue', modelId, origin: 'AI_EDITOR' } });
+    }
+    alternating.push(message);
+  }
+
+  if (!isUserMessage(alternating.at(-1))) {
+    alternating.push({ userInputMessage: { content: 'Continue', modelId, origin: 'AI_EDITOR' } });
+  }
+  return alternating;
+}
+
+function systemText(system) {
+  if (typeof system === 'string') return system;
+  if (!Array.isArray(system)) return undefined;
+  const text = system.filter(block => block?.type === 'text' || typeof block?.text === 'string').map(block => block.text || '').join('\n');
+  return text || undefined;
+}
+
+export function buildConversationRequest(messages, {
+  modelId,
+  system,
+  tools,
+  conversationId,
+  agentMode = 'vibe',
+  systemPromptMode = process.env.KIRO_SYSTEM_PROMPT_MODE || 'legacy',
+} = {}) {
   const validModelId = modelId || undefined;
   const cwTools = convertTools(tools);
   const history = [];
+  const prompt = systemText(system);
 
-  // system → 注入为第一轮 user/assistant 对
-  if (system) {
-    const sysText = typeof system === 'string' ? system : system.map(b => b.text || '').join('\n');
-    if (sysText) {
-      history.push({
-        userInputMessage: {
-          content: sysText, modelId: validModelId, origin: 'AI_EDITOR',
-        },
-      });
-      history.push({ assistantResponseMessage: { content: 'I will follow these instructions.' } });
-    }
+  // Kiro 1.0.231 has a top-level systemPrompt field, but it is guarded by
+  // system_field_injection and defaults to disabled. Mirror that default.
+  if (prompt && systemPromptMode !== 'field') {
+    history.push({
+      userInputMessage: { content: prompt, modelId: validModelId, origin: 'AI_EDITOR' },
+    });
+    history.push({ assistantResponseMessage: { content: 'I will follow these instructions.' } });
   }
 
   // 遍历 messages，构建 history
@@ -255,10 +417,9 @@ export function convertMessages(messages, { modelId, system, tools } = {}) {
         // tool_result 消息：text block 作为 content，tool_result 放在 userInputMessageContext
         // 关键：Claude Code 的 ESC 中断会把 tool_result + [Request interrupted] + 新 prompt 打包成同一条 user message 的多个 content block，
         // 如果这里把 content 写死成 ''，中断标记和新 prompt 会被静默丢弃，模型无法感知中断
-        // Q Developer 不接受空 content，当只有 toolResults 时补占位文本
         history.push({
           userInputMessage: {
-            content: text || '[Tool results]',
+            content: text,
             modelId: validModelId,
             origin: 'AI_EDITOR',
             userInputMessageContext: { toolResults },
@@ -268,7 +429,7 @@ export function convertMessages(messages, { modelId, system, tools } = {}) {
       } else {
         history.push({
           userInputMessage: {
-            content: text || '...', modelId: validModelId, origin: 'AI_EDITOR',
+            content: text, modelId: validModelId, origin: 'AI_EDITOR',
             ...(images.length > 0 && { images }),
           },
         });
@@ -288,23 +449,16 @@ export function convertMessages(messages, { modelId, system, tools } = {}) {
     // system 已在上面处理
   }
 
-  // 确保 history 以 user→assistant 交替，末尾是 user
-  // 桥接后末尾仍可能是 assistant；CW 要求 currentMessage 必须是 userInputMessage
-  const last = history.at(-1);
-  if (last?.assistantResponseMessage) {
-    history.push({
-      userInputMessage: { content: 'Continue.', modelId: validModelId, origin: 'AI_EDITOR' },
-    });
-  }
+  const normalized = normalizeConversation(history, validModelId);
 
-  const currentMessage = history.at(-1);
+  const currentMessage = normalized.at(-1);
   // 将 tools 注入到 currentMessage
   // 当没有传 tools 但 history 中有 toolUses 时，自动生成最小 tools 定义
-  // Q Developer 要求 history 中引用的工具必须在 tools 中有定义
+  // Kiro Runtime 要求 history 中引用的工具必须在 tools 中有定义
   let finalTools = cwTools;
   if (!finalTools && currentMessage?.userInputMessage) {
     const toolNames = new Set();
-    for (const h of history) {
+    for (const h of normalized) {
       if (h.assistantResponseMessage?.toolUses) {
         for (const tu of h.assistantResponseMessage.toolUses) {
           if (tu.name) toolNames.add(tu.name);
@@ -329,11 +483,70 @@ export function convertMessages(messages, { modelId, system, tools } = {}) {
   }
 
   return {
-    conversationId: crypto.randomUUID(),
-    currentMessage,
-    history: history.slice(0, -1),
-    chatTriggerType: 'MANUAL',
+    systemPrompt: prompt && systemPromptMode === 'field' ? prompt : undefined,
+    agentMode,
+    conversationState: {
+      conversationId: conversationId || crypto.randomUUID(),
+      currentMessage,
+      history: normalized.slice(0, -1),
+      chatTriggerType: 'MANUAL',
+    },
   };
+}
+
+// Kept as a public helper for callers that only need conversationState.
+export function convertMessages(messages, options = {}) {
+  return buildConversationRequest(messages, options).conversationState;
+}
+
+function stripReasoningFromHistory(conversationState) {
+  return {
+    ...conversationState,
+    history: conversationState.history?.map(message => {
+      if (!message.assistantResponseMessage?.reasoningContent) return message;
+      const { reasoningContent, ...assistantResponseMessage } = message.assistantResponseMessage;
+      return { assistantResponseMessage };
+    }),
+  };
+}
+
+async function* sendRuntimeRequest(client, input) {
+  let receivedEvent = false;
+  try {
+    const response = await client.send(new GenerateAssistantResponseCommand(input));
+    if (!response.generateAssistantResponseResponse) throw new Error('Empty response from Kiro Runtime');
+    for await (const event of response.generateAssistantResponseResponse) {
+      receivedEvent = true;
+      yield event;
+    }
+  } catch (error) {
+    if (receivedEvent) throw error;
+    let retryInput;
+    if (error.reason === 'THINKING_SIGNATURE_INVALID') {
+      retryInput = {
+        ...input,
+        conversationState: stripReasoningFromHistory(input.conversationState),
+      };
+    } else if (input.systemPrompt && error.message === 'Improperly formed request.') {
+      const { systemPrompt, ...rest } = input;
+      retryInput = {
+        ...rest,
+        conversationState: {
+          ...input.conversationState,
+          history: [
+            { userInputMessage: { content: systemPrompt, origin: 'AI_EDITOR' } },
+            { assistantResponseMessage: { content: 'I will follow these instructions.' } },
+            ...input.conversationState.history,
+          ],
+        },
+      };
+    } else {
+      throw error;
+    }
+    const response = await client.send(new GenerateAssistantResponseCommand(retryInput));
+    if (!response.generateAssistantResponseResponse) throw new Error('Empty response from Kiro Runtime');
+    yield* response.generateAssistantResponseResponse;
+  }
 }
 
 // ============================================================
@@ -341,20 +554,18 @@ export function convertMessages(messages, { modelId, system, tools } = {}) {
 // ============================================================
 
 /**
- * 流式调用 Q Developer，yield text 和 tool_use 事件
+ * 流式调用 Kiro Runtime，yield text 和 tool_use 事件
  * Claude Code 需要完整的 tool_use 块来驱动工具循环
  */
-export async function* chatStream(client, { messages, system, tools, profileArn, modelId } = {}) {
-  const conversationState = convertMessages(messages, { modelId, system, tools });
-  const command = new GenerateAssistantResponseCommand({
-    conversationState,
+export async function* chatStream(client, { messages, system, tools, profileArn, modelId, agentMode = 'vibe', additionalModelRequestFields, systemPromptMode } = {}) {
+  const request = buildConversationRequest(messages, { modelId, system, tools, agentMode, systemPromptMode });
+  const commandInput = {
+    conversationState: request.conversationState,
     profileArn,
-  });
-
-  const response = await client.send(command);
-  if (!response.generateAssistantResponseResponse) {
-    throw new Error('Empty response from Q Developer');
-  }
+    agentMode: request.agentMode,
+    ...(request.systemPrompt && { systemPrompt: request.systemPrompt }),
+    ...(additionalModelRequestFields && { additionalModelRequestFields }),
+  };
 
   // 跟踪当前的 tool_use 状态
   const activeTools = new Map(); // toolUseId → { name, inputChunks }
@@ -362,7 +573,7 @@ export async function* chatStream(client, { messages, system, tools, profileArn,
   const stats = {};
   let meteringUsage = 0;
 
-  for await (const event of response.generateAssistantResponseResponse) {
+  for await (const event of sendRuntimeRequest(client, commandInput)) {
     // 文本内容
     if (event.assistantResponseEvent?.content) {
       yield {
@@ -374,6 +585,11 @@ export async function* chatStream(client, { messages, system, tools, profileArn,
 
     // thinking/reasoning 内容
     if (event.reasoningContentEvent) {
+      if (event.reasoningContentEvent.redactedContent) {
+        const value = event.reasoningContentEvent.redactedContent;
+        const data = typeof value === 'string' ? value : Buffer.from(value).toString('base64');
+        yield { type: 'redacted_thinking', data };
+      }
       if (event.reasoningContentEvent.text) {
         yield { type: 'thinking', text: event.reasoningContentEvent.text };
       }
@@ -408,12 +624,19 @@ export async function* chatStream(client, { messages, system, tools, profileArn,
       parts.push(`total=${t.totalTokens ?? 0}`);
       stats.tokens = parts.join(' ');
     }
+    if (event.metadataEvent?.stopReason) {
+      yield {
+        type: 'stop_reason',
+        stopReason: normalizeStopReason(event.metadataEvent.stopReason),
+        stopDetails: event.metadataEvent.stopDetails,
+      };
+    }
 
     // 无效状态事件（错误）
     if (event.invalidStateEvent) {
       stats.invalid = `${event.invalidStateEvent.reason}: ${event.invalidStateEvent.message}`;
       // 将 invalidStateEvent 作为错误抛出，让调用方感知
-      throw new Error(`Q Developer invalidState: ${event.invalidStateEvent.reason} - ${event.invalidStateEvent.message}`);
+      throw new Error(`Kiro Runtime invalidState: ${event.invalidStateEvent.reason} - ${event.invalidStateEvent.message}`);
     }
 
     // 补充链接事件
@@ -471,17 +694,21 @@ export async function* chatStream(client, { messages, system, tools, profileArn,
 /**
  * 非流式调用
  */
-export async function chat(client, { messages, system, tools, profileArn, modelId } = {}) {
+export async function chat(client, { messages, system, tools, profileArn, modelId, agentMode, additionalModelRequestFields, systemPromptMode } = {}) {
   const content = [];
   let usedModelId;
   let thinkingText = '';
   let thinkingSignature;
   let stats;
   let meteringUsage = 0;
+  let upstreamStopReason;
+  let stopDetails;
 
-  for await (const event of chatStream(client, { messages, system, tools, profileArn, modelId })) {
+  for await (const event of chatStream(client, { messages, system, tools, profileArn, modelId, agentMode, additionalModelRequestFields, systemPromptMode })) {
     if (event.type === 'thinking') {
       thinkingText += event.text;
+    } else if (event.type === 'redacted_thinking') {
+      content.push({ type: 'redacted_thinking', data: event.data });
     } else if (event.type === 'thinking_signature') {
       thinkingSignature = event.signature;
     } else if (event.type === 'content') {
@@ -503,6 +730,9 @@ export async function chat(client, { messages, system, tools, profileArn, modelI
     } else if (event.type === 'summary') {
       stats = event.stats;
       meteringUsage = event.meteringUsage;
+    } else if (event.type === 'stop_reason') {
+      upstreamStopReason = event.stopReason;
+      stopDetails = event.stopDetails;
     }
   }
 
@@ -512,7 +742,24 @@ export async function chat(client, { messages, system, tools, profileArn, modelI
   }
 
   const hasToolUse = content.some(b => b.type === 'tool_use');
-  return { content, stopReason: hasToolUse ? 'tool_use' : 'end_turn', modelId: usedModelId, stats, meteringUsage };
+  return {
+    content,
+    stopReason: hasToolUse ? 'tool_use' : normalizeStopReason(upstreamStopReason),
+    stopDetails,
+    modelId: usedModelId,
+    stats,
+    meteringUsage,
+  };
+}
+
+function normalizeStopReason(reason) {
+  if (!reason) return 'end_turn';
+  const normalized = String(reason).toLowerCase();
+  if (normalized.includes('tool')) return 'tool_use';
+  if (normalized.includes('max') || normalized.includes('length')) return 'max_tokens';
+  if (normalized.includes('stop_sequence')) return 'stop_sequence';
+  if (normalized.includes('refusal')) return 'refusal';
+  return 'end_turn';
 }
 
 // ============================================================
@@ -522,7 +769,7 @@ export async function chat(client, { messages, system, tools, profileArn, modelI
 export async function listAvailableModels(accessToken, { profileArn, authMethod, provider, machineId } = {}) {
   const arnRegion = regionFromArn(profileArn);
   const region = arnRegion || DEFAULT_REGION;
-  const endpoint = endpointForRegion(region);
+  const endpoint = (process.env.KIRO_CONTROL_PLANE_ENDPOINT || `https://management.${region}.kiro.dev`).replace(/\/$/, '');
 
   const params = new URLSearchParams({ origin: 'AI_EDITOR' });
   if (profileArn) params.set('profileArn', profileArn);
@@ -530,18 +777,28 @@ export async function listAvailableModels(accessToken, { profileArn, authMethod,
   const headers = {
     'Authorization': `Bearer ${accessToken}`,
     'User-Agent': buildUserAgent(machineId),
+    'Content-Type': 'application/x-amz-json-1.0',
+    'x-amz-target': 'KiroControlPlaneBearerService.ListAvailableModels',
     'x-amzn-codewhisperer-optout': 'true',
   };
-  if (authMethod === 'external_idp') headers['TokenType'] = 'EXTERNAL_IDP';
+  const tokenTypes = {
+    external_idp: 'EXTERNAL_IDP',
+    machine_token: 'KIRO_MACHINE_TOKEN',
+    api_key: 'API_KEY',
+    IdC: 'SSO_OIDC',
+    idc: 'SSO_OIDC',
+  };
+  if (tokenTypes[authMethod]) headers.TokenType = tokenTypes[authMethod];
   if (provider === 'Internal') headers['redirect-for-internal'] = 'true';
 
   const allModels = [];
   let defaultModel = null;
   let nextToken;
+  let pages = 0;
 
   do {
     if (nextToken) params.set('nextToken', nextToken);
-    const url = `${endpoint}/ListAvailableModels?${params}`;
+    const url = `${endpoint}/List-Available-Models/?${params}`;
     const res = await fetch(url, { headers });
     if (!res.ok) {
       const body = await res.text();
@@ -551,7 +808,8 @@ export async function listAvailableModels(accessToken, { profileArn, authMethod,
     allModels.push(...(data.models || []));
     if (data.defaultModel && !defaultModel) defaultModel = data.defaultModel;
     nextToken = data.nextToken;
-  } while (nextToken);
+    pages++;
+  } while (nextToken && pages < 10);
 
   return { models: allModels, defaultModel };
 }
