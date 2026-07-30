@@ -95,12 +95,20 @@ function startOfDay() {
   return d.getTime();
 }
 
+function startOfMonth() {                                                                                                             
+  const d = new Date();
+  d.setDate(1);                                                                                                                       
+  d.setHours(0, 0, 0, 0);                                                   
+  return d.getTime();                                                                                                                 
+}
+
 export function queryUsage(period) {
   const now = Date.now();
   const ranges = {
     today: startOfDay(),
     '7d': now - 7 * 86400000,
     '30d': now - 30 * 86400000,
+    'month': startOfMonth(),   // 当前自然月
   };
   if (period === 'all') return { period, ...summarize(readAllEntries()) };
   const since = ranges[period] ?? ranges.today;
