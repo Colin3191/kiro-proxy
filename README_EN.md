@@ -58,7 +58,7 @@ Add to `~/.codex/config.toml`:
 
 ```toml
 model_provider = "kiro"
-model = "claude-sonnet-4.6"
+model = "gpt-5.6-sol"
 
 [model_providers.kiro]
 name = "Kiro Proxy"
