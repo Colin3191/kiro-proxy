@@ -40,8 +40,8 @@ Add to `~/.claude/settings.json`:
   "env": {
     "ANTHROPIC_AUTH_TOKEN": "any",
     "ANTHROPIC_BASE_URL": "http://localhost:3456",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4.6",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4.6",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-5",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4.5"
   },
   "model": "sonnet"
@@ -89,13 +89,13 @@ curl http://localhost:3456/v1/models
 curl http://localhost:3456/v1/messages \
   -H "Content-Type: application/json" \
   -H "x-api-key: any" \
-  -d '{"model": "claude-sonnet-4.6", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}]}'
+  -d '{"model": "claude-sonnet-5", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}]}'
 
 # Streaming
 curl http://localhost:3456/v1/messages \
   -H "Content-Type: application/json" \
   -H "x-api-key: any" \
-  -d '{"model": "claude-sonnet-4.6", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}], "stream": true}'
+  -d '{"model": "claude-sonnet-5", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}], "stream": true}'
 ```
 
 ### POST /v1/responses — OpenAI Responses-compatible
@@ -104,12 +104,12 @@ curl http://localhost:3456/v1/messages \
 # Non-streaming
 curl http://localhost:3456/v1/responses \
   -H "Content-Type: application/json" \
-  -d '{"model": "claude-sonnet-4.6", "input": "Hello"}'
+  -d '{"model": "gpt-5.6-sol", "input": "Hello"}'
 
 # Streaming
 curl http://localhost:3456/v1/responses \
   -H "Content-Type: application/json" \
-  -d '{"model": "claude-sonnet-4.6", "input": "Hello", "stream": true}'
+  -d '{"model": "gpt-5.6-sol", "input": "Hello", "stream": true}'
 ```
 
 ### GET /health
@@ -129,6 +129,9 @@ curl http://localhost:3456/credits?period=7d
 
 # Last 30 days
 curl http://localhost:3456/credits?period=30d
+
+# Current calendar month
+curl http://localhost:3456/credits?period=month
 
 # All time
 curl http://localhost:3456/credits?period=all

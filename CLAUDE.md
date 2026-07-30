@@ -32,7 +32,7 @@ Source files, each with a single responsibility:
 - **model-options.js** — Normalizes Anthropic/Responses thinking options and maps effort levels through each Kiro model's `additionalModelRequestFieldsSchema`.
 - **token-reader.js** — Reads and refreshes Kiro auth tokens. Supports Social (Google/GitHub OAuth) and IdC (Enterprise/BuilderId) auth flows. Caches in memory, auto-refreshes 5 minutes before expiry, deduplicates concurrent refresh calls.
 - **token-counter.js** — Heuristic token estimator for Anthropic-style content (text/tool_use/tool_result/thinking). Applies per-category multipliers (CJK, emoji, math symbols, URL delimiters, etc.). Used only for `usage.input_tokens` / `output_tokens` in responses — not billing.
-- **usage-tracker.js** — Appends one JSONL line per request to `~/.kiro-proxy/usage/YYYY/MM/DD.jsonl` with `{ts, credits, model}`. Powers the `/credits` endpoint; supports `today | 7d | 30d | all` periods.
+- **usage-tracker.js** — Appends one JSONL line per request to `~/.kiro-proxy/usage/YYYY/MM/DD.jsonl` with `{ts, credits, model}`. Powers the `/credits` endpoint; supports `today | 7d | 30d | month | all` periods.
 - **logger.js** — ANSI-colored console logger: `log()` for HTTP lines, `tagLog/tagWarn/tagError` for tagged messages, `logSummary()` for the per-request summary line with elapsed/context/tokens/credits.
 - **proxy-config.js** — Reads `HTTPS_PROXY`/`HTTP_PROXY` and installs `undici`'s `EnvHttpProxyAgent` globally.
 
@@ -45,7 +45,7 @@ Request flow: Client → Express endpoint → `getAccessToken()` → `getClient(
 - `GET /v1/models` — List available models (Anthropic format)
 - `GET /q/models` — Raw Kiro model list
 - `GET /health` — Token expiration status
-- `GET /credits?period=today|7d|30d|all` — Credit usage summary (requests, credits, byModel)
+- `GET /credits?period=today|7d|30d|month|all` — Credit usage summary (requests, credits, byModel)
 
 All endpoints are protected by a Bearer-token middleware if `PROXY_API_KEY` is set; otherwise open.
 
