@@ -58,7 +58,7 @@ Claude Code 默认使用 Anthropic 官方 model ID，需要通过环境变量映
 
 ```toml
 model_provider = "kiro"
-model = "claude-sonnet-4.6"
+model = "gpt-5.6-sol"
 
 [model_providers.kiro]
 name = "Kiro Proxy"
