@@ -15,6 +15,13 @@ export function normalizeResponsesModelOptions(body = {}) {
   return effort ? { effort } : undefined;
 }
 
+export function normalizeChatCompletionsModelOptions(body = {}) {
+  const effort = typeof body.reasoning_effort === 'string'
+    ? body.reasoning_effort
+    : (typeof body.reasoning?.effort === 'string' ? body.reasoning.effort : undefined);
+  return effort ? { effort } : undefined;
+}
+
 export function normalizeAnthropicModelOptions(body = {}) {
   const explicitEffort = typeof body.output_config?.effort === 'string' ? body.output_config.effort : undefined;
   const thinking = body.thinking && typeof body.thinking === 'object' ? body.thinking : undefined;

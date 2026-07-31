@@ -14,7 +14,14 @@ import {
   convertResponsesRequest,
 } from './responses-api.js';
 import {
+  ChatCompletionsStreamAdapter,
+  ChatCompletionsValidationError,
+  buildChatCompletion,
+  convertChatCompletionsRequest,
+} from './chat-completions.js';
+import {
   normalizeAnthropicModelOptions,
+  normalizeChatCompletionsModelOptions,
   normalizeResponsesModelOptions,
   resolveAdditionalModelRequestFields,
 } from './model-options.js';
@@ -393,6 +400,90 @@ app.post('/v1/responses', async (req, res) => {
 });
 
 // ============================================================
+// POST /v1/chat/completions — OpenAI Chat Completions compatible
+// ============================================================
+app.post('/v1/chat/completions', async (req, res) => {
+  try {
+    const { model, stream } = req.body;
+    const { messages, system, tools, modelId } = convertChatCompletionsRequest(req.body);
+
+    const { client, tokenData } = await getClient();
+    const additionalModelRequestFields = await resolveModelRequestFields(
+      tokenData,
+      modelId,
+      normalizeChatCompletionsModelOptions(req.body),
+    );
+    const opts = { messages, system, tools, profileArn: tokenData.profileArn, modelId, additionalModelRequestFields };
+    const rid = reqId();
+    const start = Date.now();
+
+    log('POST', '/v1/chat/completions', rid, {
+      model: model || 'default',
+      stream: !!stream,
+      messages: messages.length,
+      tools: tools?.length || 0,
+    });
+
+    if (stream) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      const inputTokens = countMessages(messages, system);
+      const outputParts = [];
+      const adapter = new ChatCompletionsStreamAdapter(req.body);
+      const send = chunk => res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      for (const chunk of adapter.start()) send(chunk);
+
+      try {
+        for await (const chunk of chatStream(client, opts)) {
+          if (chunk.type === 'content') outputParts.push(chunk.content);
+          else if (chunk.type === 'thinking') outputParts.push(chunk.text);
+          else if (chunk.type === 'tool_use_end') outputParts.push(JSON.stringify(chunk.input));
+          else if (chunk.type === 'summary' && typeof chunk.meteringUsage === 'number') {
+            recordUsage(chunk.meteringUsage, model);
+          }
+          for (const event of adapter.push(chunk)) send(event);
+        }
+        const outputTokens = countContent(outputParts.join(''));
+        for (const event of adapter.complete({ inputTokens, outputTokens })) send(event);
+        res.write('data: [DONE]\n\n');
+        res.end();
+        const summary = adapter.summary || {};
+        summary.estTokens = `~tokens: in=${inputTokens} out=${outputTokens}`;
+        logSummary(rid, Date.now() - start, summary);
+      } catch (err) {
+        tagError('chat-completions-stream', err.message || err);
+        send(adapter.error(err.message));
+        res.write('data: [DONE]\n\n');
+        res.end();
+      }
+    } else {
+      const result = await chat(client, opts);
+      if (typeof result.meteringUsage === 'number') recordUsage(result.meteringUsage, model);
+      const inputTokens = countMessages(messages, system);
+      const outputTokens = countContent(result.content);
+      const s = result.stats || {};
+      s.estTokens = `~tokens: in=${inputTokens} out=${outputTokens}`;
+      logSummary(rid, Date.now() - start, s);
+      res.json(buildChatCompletion({ request: req.body, result, inputTokens, outputTokens }));
+    }
+  } catch (err) {
+    tagError('chat-completions', err.message || err);
+    const status = err instanceof ChatCompletionsValidationError
+      ? err.status
+      : (err.message?.includes('expired') ? 401 : 500);
+    res.status(status).json({
+      error: {
+        message: err.message,
+        type: status === 400 ? 'invalid_request_error' : (status === 401 ? 'authentication_error' : 'server_error'),
+        param: null,
+        code: status === 400 ? 'invalid_request' : null,
+      },
+    });
+  }
+});
+
+// ============================================================
 // GET /v1/models
 // ============================================================
 app.get('/v1/models', async (_req, res) => {
@@ -444,6 +535,7 @@ app.listen(PORT, async () => {
   console.log(`${c.cyan}Kiro Proxy${c.reset} running on ${c.green}http://localhost:${PORT}${c.reset}`);
   console.log(`  ${c.gray}Anthropic:${c.reset} http://localhost:${PORT}/v1/messages`);
   console.log(`  ${c.gray}OpenAI:   ${c.reset} http://localhost:${PORT}/v1/responses`);
+  console.log(`  ${c.gray}OpenAI:   ${c.reset} http://localhost:${PORT}/v1/chat/completions`);
   console.log(`  ${c.gray}Models:   ${c.reset} http://localhost:${PORT}/v1/models`);
   console.log(`  ${c.gray}Credits: ${c.reset} http://localhost:${PORT}/credits`);
   console.log(`  ${c.gray}Auth:     ${c.reset} ${PROXY_API_KEY ? `${c.green}enabled${c.reset} (PROXY_API_KEY)` : `${c.yellow}disabled${c.reset} (no PROXY_API_KEY set)`}`);

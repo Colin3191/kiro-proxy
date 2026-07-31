@@ -17,6 +17,7 @@
     "q-client.js",
     "kiro-runtime-client.js",
     "responses-api.js",
+    "chat-completions.js",
     "model-options.js",
     "token-reader.js",
     "token-counter.js",

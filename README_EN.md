@@ -112,6 +112,22 @@ curl http://localhost:3456/v1/responses \
   -d '{"model": "gpt-5.6-sol", "input": "Hello", "stream": true}'
 ```
 
+### POST /v1/chat/completions — OpenAI Chat Completions-compatible
+
+```bash
+# Non-streaming
+curl http://localhost:3456/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "auto", "messages": [{"role": "user", "content": "Hello"}]}'
+
+# Streaming (stream_options.include_usage adds a final usage-only chunk)
+curl http://localhost:3456/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "auto", "messages": [{"role": "user", "content": "Hello"}], "stream": true, "stream_options": {"include_usage": true}}'
+```
+
+Supports the `tools` / `tool_calls` / `role: "tool"` loop, data URL images, and `reasoning_effort`; thinking text is returned in `reasoning_content`. Unsupported fields (`n`, `logprobs`, `response_format`, `temperature`, ...) are ignored, and only `tool_choice: "none"` has an effect.
+
 ### GET /health
 
 Check token status and expiration.

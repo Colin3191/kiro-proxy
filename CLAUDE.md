@@ -29,6 +29,7 @@ Source files, each with a single responsibility:
 - **kiro-runtime-client.js** — Minimal implementation of the private Kiro Runtime client. Sends bearer-authenticated AWS JSON requests and parses Amazon EventStream frames.
 - **q-client.js** — Converts Anthropic messages to Kiro Runtime format, repairs strict conversation ordering, and handles signed/redacted reasoning and tool events.
 - **responses-api.js** — Converts OpenAI Responses input items and function calls to the shared Anthropic-style conversation model, and formats non-streaming/streaming Responses output.
+- **chat-completions.js** — Same role for the OpenAI Chat Completions wire format: converts `messages`/`tool_calls`/`role: "tool"` into the Anthropic-style conversation model, and emits `chat.completion` / `chat.completion.chunk` payloads. Only `tool_choice: "none"` is honored; sampling fields the Kiro Runtime does not accept are ignored.
 - **model-options.js** — Normalizes Anthropic/Responses thinking options and maps effort levels through each Kiro model's `additionalModelRequestFieldsSchema`.
 - **token-reader.js** — Reads and refreshes Kiro auth tokens. Supports Social (Google/GitHub OAuth) and IdC (Enterprise/BuilderId) auth flows. Caches in memory, auto-refreshes 5 minutes before expiry, deduplicates concurrent refresh calls.
 - **token-counter.js** — Heuristic token estimator for Anthropic-style content (text/tool_use/tool_result/thinking). Applies per-category multipliers (CJK, emoji, math symbols, URL delimiters, etc.). Used only for `usage.input_tokens` / `output_tokens` in responses — not billing.
@@ -42,6 +43,7 @@ Request flow: Client → Express endpoint → `getAccessToken()` → `getClient(
 
 - `POST /v1/messages` — Anthropic Messages API (streaming + non-streaming)
 - `POST /v1/responses` — OpenAI Responses API (streaming + non-streaming, function calls, reasoning replay)
+- `POST /v1/chat/completions` — OpenAI Chat Completions API (streaming + non-streaming, tool calls, `reasoning_content`)
 - `GET /v1/models` — List available models (Anthropic format)
 - `GET /q/models` — Raw Kiro model list
 - `GET /health` — Token expiration status

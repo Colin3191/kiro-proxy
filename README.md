@@ -112,6 +112,22 @@ curl http://localhost:3456/v1/responses \
   -d '{"model": "gpt-5.6-sol", "input": "Hello", "stream": true}'
 ```
 
+### POST /v1/chat/completions — OpenAI Chat Completions 兼容
+
+```bash
+# 非流式
+curl http://localhost:3456/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "auto", "messages": [{"role": "user", "content": "Hello"}]}'
+
+# 流式（可选 stream_options.include_usage 在结束前返回 usage）
+curl http://localhost:3456/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "auto", "messages": [{"role": "user", "content": "Hello"}], "stream": true, "stream_options": {"include_usage": true}}'
+```
+
+支持 `tools` / `tool_calls` / `role: "tool"` 工具循环、data URL 图片、`reasoning_effort`；思考内容放在 `reasoning_content` 字段。不支持的字段（`n`、`logprobs`、`response_format`、`temperature` 等）会被忽略，`tool_choice` 仅 `none` 生效。
+
 ### GET /health
 
 检查 token 状态及过期时间。
